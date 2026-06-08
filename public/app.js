@@ -4,7 +4,11 @@ import {
   doc,
   getDoc,
   setDoc,
-  runTransaction
+  runTransaction,
+  collection,
+  onSnapshot,
+  query,
+  orderBy
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 // ================= Firebase Configuration =================
@@ -1352,4 +1356,253 @@ window.copyToClipboard = function (elementId) {
   }).catch(err => {
     console.error("Copy failed", err);
   });
+};
+
+
+// ===============================================================
+//  REGISTERED VOTERS TAB — Live Firebase listener
+// ===============================================================
+
+let allRegisteredVoters = [];   // full list, used for client-side filtering
+let registeredUnsubscribe = null;
+
+function startRegisteredListener() {
+  if (!isFirebaseMode) {
+    renderRegisteredFromLocal();
+    return;
+  }
+  if (registeredUnsubscribe) return; // already listening
+
+  const q = query(collection(db, "VoterDB"));
+  registeredUnsubscribe = onSnapshot(q, (snapshot) => {
+    allRegisteredVoters = [];
+    snapshot.forEach(docSnap => {
+      allRegisteredVoters.push({ id: docSnap.id, ...docSnap.data() });
+    });
+    // Sort by registration (use aadhaar id as fallback)
+    allRegisteredVoters.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    renderRegisteredTable(allRegisteredVoters);
+    updateRegisteredSummary(allRegisteredVoters);
+  }, (err) => {
+    console.error("[EVM] Registered listener error:", err);
+    renderRegisteredFromLocal();
+  });
+}
+
+function renderRegisteredFromLocal() {
+  const voters = JSON.parse(localStorage.getItem("evm_voters") || "{}");
+  allRegisteredVoters = Object.values(voters);
+  renderRegisteredTable(allRegisteredVoters);
+  updateRegisteredSummary(allRegisteredVoters);
+}
+
+function updateRegisteredSummary(voters) {
+  const total    = voters.length;
+  const eligible = voters.filter(v => v.age >= 18).length;
+  const voted    = voters.filter(v => v.flag === 1).length;
+  const pending  = eligible - voted;
+
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = val; };
+  set("regTotalCount",   total);
+  set("regEligibleCount", eligible);
+  set("regVotedCount",   voted);
+  set("regPendingCount", pending < 0 ? 0 : pending);
+}
+
+function maskAadhaar(a) {
+  if (!a) return "—";
+  const s = String(a);
+  return "XXXX-XXXX-" + s.slice(-4);
+}
+
+function formatDate(val) {
+  if (!val) return "—";
+  if (val.toDate) val = val.toDate(); // Firestore Timestamp
+  const d = new Date(val);
+  if (isNaN(d)) return String(val);
+  return d.toLocaleDateString("en-IN", { day:"2-digit", month:"short", year:"numeric" });
+}
+
+function partyBadge(party) {
+  if (!party) return `<span class="badge badge-muted">—</span>`;
+  const colors = { AB:"badge-primary", CD:"badge-accent", EF:"badge-success", GH:"badge-primary", NOTA:"badge-danger" };
+  const cls = colors[party] || "badge-muted";
+  return `<span class="badge ${cls}">${party}</span>`;
+}
+
+function renderRegisteredTable(voters) {
+  const tbody = document.getElementById("registeredTbody");
+  if (!tbody) return;
+
+  if (!voters || voters.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="11" class="table-empty">No registered voters found.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = voters.map((v, i) => {
+    const eligible = (v.age >= 18);
+    const hasVoted = (v.flag === 1);
+    return `
+      <tr class="new-row">
+        <td style="color:var(--text-muted)">${i + 1}</td>
+        <td><span class="aadhaar-mask">${maskAadhaar(v.aadhaar || v.id)}</span></td>
+        <td><strong>${v.name || "—"}</strong></td>
+        <td>${v.age || "—"}</td>
+        <td>${v.gender || "—"}</td>
+        <td>${v.mobile || "—"}</td>
+        <td style="max-width:160px; overflow:hidden; text-overflow:ellipsis;">${v.email || "—"}</td>
+        <td>${v.dob || "—"}</td>
+        <td>${eligible
+          ? `<span class="badge badge-success">✔ Eligible</span>`
+          : `<span class="badge badge-danger">✗ Under 18</span>`}</td>
+        <td>${hasVoted
+          ? `<span class="badge badge-primary">✔ Voted (${v.voted_party || "?"})</span>`
+          : `<span class="badge badge-accent">⏳ Pending</span>`}</td>
+        <td style="color:var(--text-muted); font-size:0.8rem;">${formatDate(v.registered_at) !== "—" ? formatDate(v.registered_at) : "—"}</td>
+      </tr>`;
+  }).join("");
+}
+
+window.filterRegisteredTable = function () {
+  const search = (document.getElementById("regSearch")?.value || "").toLowerCase();
+  const filter = document.getElementById("regFilter")?.value || "all";
+
+  let filtered = allRegisteredVoters.filter(v => {
+    const matchSearch = !search ||
+      (v.name || "").toLowerCase().includes(search) ||
+      String(v.aadhaar || v.id || "").includes(search);
+
+    let matchFilter = true;
+    if (filter === "eligible") matchFilter = v.age >= 18;
+    if (filter === "voted")    matchFilter = v.flag === 1;
+    if (filter === "pending")  matchFilter = v.age >= 18 && v.flag !== 1;
+
+    return matchSearch && matchFilter;
+  });
+
+  renderRegisteredTable(filtered);
+  updateRegisteredSummary(filtered);
+};
+
+
+// ===============================================================
+//  COMPLETED VOTES TAB — Live Firebase listener
+// ===============================================================
+
+let allVotedVoters = [];
+let votedUnsubscribe = null;
+
+function startVotedListener() {
+  if (!isFirebaseMode) {
+    renderVotedFromLocal();
+    return;
+  }
+  if (votedUnsubscribe) return;
+
+  const q = query(collection(db, "VoterDB"));
+  votedUnsubscribe = onSnapshot(q, (snapshot) => {
+    allVotedVoters = [];
+    snapshot.forEach(docSnap => {
+      const d = { id: docSnap.id, ...docSnap.data() };
+      if (d.flag === 1) allVotedVoters.push(d);
+    });
+    // Sort newest first by voted_at
+    allVotedVoters.sort((a, b) => {
+      const ta = a.voted_at ? new Date(a.voted_at.toDate ? a.voted_at.toDate() : a.voted_at) : 0;
+      const tb = b.voted_at ? new Date(b.voted_at.toDate ? b.voted_at.toDate() : b.voted_at) : 0;
+      return tb - ta;
+    });
+    renderVotedTable(allVotedVoters);
+    updateVotedSummary(allVotedVoters);
+  }, (err) => {
+    console.error("[EVM] Voted listener error:", err);
+    renderVotedFromLocal();
+  });
+}
+
+function renderVotedFromLocal() {
+  const voters = JSON.parse(localStorage.getItem("evm_voters") || "{}");
+  allVotedVoters = Object.values(voters).filter(v => v.flag === 1);
+  renderVotedTable(allVotedVoters);
+  updateVotedSummary(allVotedVoters);
+}
+
+function updateVotedSummary(voters) {
+  const total = voters.length;
+
+  // Leading party
+  const tally = {};
+  voters.forEach(v => { tally[v.voted_party] = (tally[v.voted_party] || 0) + 1; });
+  let leader = "—", leaderCount = 0;
+  Object.entries(tally).forEach(([p, c]) => { if (c > leaderCount) { leader = p; leaderCount = c; } });
+
+  // Turnout = voted / total registered
+  const totalReg = allRegisteredVoters.length || total;
+  const turnout = totalReg > 0 ? Math.round((total / totalReg) * 100) : 0;
+
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = val; };
+  set("votedTotalCount",   total);
+  set("votedLeaderParty",  leader);
+  set("votedLeaderCount",  leaderCount);
+  set("votedTurnout",      turnout + "%");
+}
+
+function formatDateTime(val) {
+  if (!val) return "—";
+  if (val.toDate) val = val.toDate();
+  const d = new Date(val);
+  if (isNaN(d)) return String(val);
+  return d.toLocaleString("en-IN", {
+    day:"2-digit", month:"short", year:"numeric",
+    hour:"2-digit", minute:"2-digit", hour12:true
+  });
+}
+
+function renderVotedTable(voters) {
+  const tbody = document.getElementById("votedTbody");
+  if (!tbody) return;
+
+  if (!voters || voters.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" class="table-empty">No votes recorded yet.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = voters.map((v, i) => `
+    <tr class="new-row">
+      <td style="color:var(--text-muted)">${i + 1}</td>
+      <td><span class="aadhaar-mask">${maskAadhaar(v.aadhaar || v.id)}</span></td>
+      <td><strong>${v.name || "—"}</strong></td>
+      <td>${v.age || "—"}</td>
+      <td>${v.gender || "—"}</td>
+      <td>${partyBadge(v.voted_party)}</td>
+      <td style="color:var(--text-muted); font-size:0.8rem;">${formatDateTime(v.voted_at)}</td>
+    </tr>
+  `).join("");
+}
+
+window.filterVotedTable = function () {
+  const search = (document.getElementById("votedSearch")?.value || "").toLowerCase();
+  const party  = document.getElementById("votedPartyFilter")?.value || "all";
+
+  let filtered = allVotedVoters.filter(v => {
+    const matchSearch = !search ||
+      (v.name || "").toLowerCase().includes(search) ||
+      String(v.aadhaar || v.id || "").includes(search);
+    const matchParty = party === "all" || v.voted_party === party;
+    return matchSearch && matchParty;
+  });
+
+  renderVotedTable(filtered);
+};
+
+
+// ===============================================================
+//  Hook into tab switch to start listeners on first visit
+// ===============================================================
+
+const _origSwitchTab = window.switchTab;
+window.switchTab = function (tabId) {
+  _origSwitchTab(tabId);
+  if (tabId === "registered-tab") startRegisteredListener();
+  if (tabId === "voted-tab")      { startRegisteredListener(); startVotedListener(); }
 };

@@ -26,6 +26,12 @@
         <button class="tab-btn" onclick="switchTab('stats-tab')">
           📊 Stats Dashboard
         </button>
+        <button class="tab-btn" onclick="switchTab('registered-tab')">
+          👥 Registered Voters
+        </button>
+        <button class="tab-btn" onclick="switchTab('voted-tab')">
+          ✅ Completed Votes
+        </button>
         <button class="tab-btn" onclick="switchTab('dev-hub-tab')">
           🔌 Developer Hub
         </button>
@@ -305,6 +311,138 @@
             </div>
             <div class="chart-bar-val" id="count-NOTA">0 (0%)</div>
           </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==============================================
+         TAB 4: REGISTERED VOTERS
+         ============================================== -->
+    <section id="registered-tab" class="view-section">
+
+      <!-- Summary bar -->
+      <div class="data-summary-bar">
+        <div class="summary-item">
+          <span class="summary-num" id="regTotalCount">0</span>
+          <span class="summary-label">Total Registered</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-num" id="regEligibleCount" style="color:var(--success);">0</span>
+          <span class="summary-label">Eligible (18+)</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-num" id="regVotedCount" style="color:var(--primary);">0</span>
+          <span class="summary-label">Already Voted</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-num" id="regPendingCount" style="color:var(--accent);">0</span>
+          <span class="summary-label">Pending Vote</span>
+        </div>
+        <div class="live-indicator">
+          <span class="live-dot"></span> LIVE
+        </div>
+      </div>
+
+      <!-- Search / Filter -->
+      <div class="table-toolbar">
+        <input type="text" id="regSearch" placeholder="🔍  Search by name or Aadhaar..." oninput="filterRegisteredTable()" style="max-width:340px;">
+        <select id="regFilter" onchange="filterRegisteredTable()" style="max-width:200px;">
+          <option value="all">All Voters</option>
+          <option value="eligible">Eligible Only</option>
+          <option value="voted">Already Voted</option>
+          <option value="pending">Pending Vote</option>
+        </select>
+      </div>
+
+      <div class="card" style="overflow:hidden; padding:0;">
+        <div class="table-wrapper">
+          <table class="data-table" id="registeredTable">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Aadhaar</th>
+                <th>Name</th>
+                <th>Age</th>
+                <th>Gender</th>
+                <th>Mobile</th>
+                <th>Email</th>
+                <th>DOB</th>
+                <th>Eligible</th>
+                <th>Vote Status</th>
+                <th>Registered At</th>
+              </tr>
+            </thead>
+            <tbody id="registeredTbody">
+              <tr><td colspan="11" class="table-empty">
+                <div class="spinner"></div> Loading voter data...
+              </td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==============================================
+         TAB 5: COMPLETED VOTES
+         ============================================== -->
+    <section id="voted-tab" class="view-section">
+
+      <!-- Summary bar -->
+      <div class="data-summary-bar">
+        <div class="summary-item">
+          <span class="summary-num" id="votedTotalCount">0</span>
+          <span class="summary-label">Total Votes Cast</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-num" id="votedLeaderParty" style="color:var(--success); font-size:1.4rem;">—</span>
+          <span class="summary-label">Leading Party</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-num" id="votedLeaderCount" style="color:var(--primary);">0</span>
+          <span class="summary-label">Leader Votes</span>
+        </div>
+        <div class="summary-item">
+          <span class="summary-num" id="votedTurnout" style="color:var(--accent);">0%</span>
+          <span class="summary-label">Voter Turnout</span>
+        </div>
+        <div class="live-indicator">
+          <span class="live-dot"></span> LIVE
+        </div>
+      </div>
+
+      <!-- Search / Filter -->
+      <div class="table-toolbar">
+        <input type="text" id="votedSearch" placeholder="🔍  Search by name or Aadhaar..." oninput="filterVotedTable()" style="max-width:340px;">
+        <select id="votedPartyFilter" onchange="filterVotedTable()" style="max-width:200px;">
+          <option value="all">All Parties</option>
+          <option value="AB">AB Party</option>
+          <option value="CD">CD Party</option>
+          <option value="EF">EF Party</option>
+          <option value="GH">GH Party</option>
+          <option value="NOTA">NOTA</option>
+        </select>
+      </div>
+
+      <div class="card" style="overflow:hidden; padding:0;">
+        <div class="table-wrapper">
+          <table class="data-table" id="votedTable">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Aadhaar</th>
+                <th>Name</th>
+                <th>Age</th>
+                <th>Gender</th>
+                <th>Party Voted</th>
+                <th>Voted At</th>
+              </tr>
+            </thead>
+            <tbody id="votedTbody">
+              <tr><td colspan="7" class="table-empty">
+                <div class="spinner"></div> Loading vote records...
+              </td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </section>

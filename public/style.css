@@ -893,3 +893,216 @@ footer {
   from { opacity: 0; transform: translateY(5px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+
+/* ========================================================
+   REGISTERED VOTERS & COMPLETED VOTES TABS
+   ======================================================== */
+
+/* Summary bar */
+.data-summary-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+  background: var(--panel-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  padding: 1.2rem 1.8rem;
+  margin-bottom: 1.25rem;
+  backdrop-filter: blur(12px);
+}
+
+.summary-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 90px;
+}
+
+.summary-num {
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-main);
+}
+
+.summary-label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 4px;
+  text-align: center;
+}
+
+/* Live badge */
+.live-indicator {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--success);
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  padding: 0.35rem 0.8rem;
+  border-radius: 20px;
+}
+
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 8px var(--success);
+  animation: livePulse 1.5s infinite;
+}
+
+@keyframes livePulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.85); }
+}
+
+/* Toolbar: search + filter */
+.table-toolbar {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.table-toolbar input,
+.table-toolbar select {
+  flex: 1;
+}
+
+/* Table wrapper */
+.table-wrapper {
+  overflow-x: auto;
+  width: 100%;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.data-table thead tr {
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.data-table th {
+  padding: 0.85rem 1rem;
+  text-align: left;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+.data-table td {
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  color: var(--text-main);
+  white-space: nowrap;
+}
+
+.data-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.data-table tbody tr {
+  transition: background 0.2s;
+}
+
+.data-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* New row flash animation for live updates */
+.data-table tbody tr.new-row {
+  animation: rowFlash 1.2s ease-out;
+}
+
+@keyframes rowFlash {
+  0%   { background: rgba(6, 182, 212, 0.18); }
+  100% { background: transparent; }
+}
+
+.table-empty {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 3rem 1rem;
+  font-size: 0.9rem;
+}
+
+/* Badges inside table */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0.2rem 0.6rem;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.badge-success {
+  background: rgba(16,185,129,0.12);
+  color: var(--success);
+  border: 1px solid rgba(16,185,129,0.25);
+}
+
+.badge-danger {
+  background: rgba(239,68,68,0.12);
+  color: var(--danger);
+  border: 1px solid rgba(239,68,68,0.25);
+}
+
+.badge-primary {
+  background: rgba(6,182,212,0.12);
+  color: var(--primary);
+  border: 1px solid rgba(6,182,212,0.25);
+}
+
+.badge-accent {
+  background: rgba(99,102,241,0.12);
+  color: var(--accent);
+  border: 1px solid rgba(99,102,241,0.25);
+}
+
+.badge-muted {
+  background: rgba(156,163,175,0.1);
+  color: var(--text-muted);
+  border: 1px solid rgba(156,163,175,0.2);
+}
+
+/* Aadhaar masked display */
+.aadhaar-mask {
+  font-family: 'Consolas', monospace;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+}
+
+/* Spinner */
+.spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border-color);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  vertical-align: middle;
+  margin-right: 8px;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
