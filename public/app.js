@@ -35,6 +35,21 @@ try {
   console.warn("[EVM] Firebase Init Failed. Falling back to Demo Mode.", e);
 }
 
+
+if (isFirebaseMode) {
+  const parties = ["AB", "CD", "EF", "GH", "NOTA"];
+  (async () => {
+    for (const p of parties) {
+      const ref = doc(db, "PartyDB", p);
+      const snap = await getDoc(ref);
+      if (!snap.exists()) {
+        await setDoc(ref, { votes: 0 });
+        console.log(`[EVM] Created PartyDB doc for ${p}`);
+      }
+    }
+  })();
+}
+
 // ================= Local Storage Fallback Database =================
 const mockDB = {
   getVoter: async (aadhaar) => {
