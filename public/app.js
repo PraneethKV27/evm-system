@@ -111,6 +111,26 @@ if (!localStorage.getItem("evm_stats")) {
   }));
 }
 
+// ================= Hardware Polling =================
+async function startHardwarePolling() {
+  const hwBadge = document.getElementById("hwBadge");
+  if (!hwBadge) return;
+  
+  const updateBadge = async () => {
+    const isConnected = await checkBridgeStatus();
+    if (isConnected) {
+      hwBadge.className = "status-badge success";
+      hwBadge.innerHTML = '<span class="badge-dot"></span>Hardware: Live';
+    } else {
+      hwBadge.className = "status-badge error";
+      hwBadge.innerHTML = '<span class="badge-dot"></span>Hardware: Inactive';
+    }
+  };
+  
+  await updateBadge();
+  setInterval(updateBadge, 3000);
+}
+
 // Update database badge in UI
 document.addEventListener("DOMContentLoaded", () => {
   const badge = document.getElementById("dbBadge");
@@ -129,6 +149,9 @@ document.addEventListener("DOMContentLoaded", () => {
   
   // Render default Dev Hub template
   updateDevHubContent();
+
+  // Start polling hardware status
+  startHardwarePolling();
 
   // Aadhaar pre-verification event listener
   const voteAadhaarInput = document.getElementById("voteAadhaar");
@@ -324,9 +347,9 @@ window.startEnrollment = async function () {
   if (gallery) gallery.style.display = "none";
 
   const hasBridge = await checkBridgeStatus();
-  showStatus("fpStatus", hasBridge ? "Bridge connected! Scanning 5 samples..." : "Simulating biometric scans (7 samples)...", "working");
+  showStatus("fpStatus", hasBridge ? "Bridge connected! Scanning 5 samples..." : "Simulating biometric scans (5 samples)...", "working");
 
-  const totalSamples = hasBridge ? 5 : 7;
+  const totalSamples = 5;
   updateSampleDots(0, totalSamples);
 
   let currentSample = 0;
@@ -389,6 +412,23 @@ window.startEnrollment = async function () {
           await mockDB.setVoter(aadhaar, voterPayload);
         }
         showStatus("fpStatus", "Voter Registered & Biometrics Saved ✔", "success");
+        
+        // Clear form after delay to allow next registration
+        setTimeout(() => {
+          document.getElementById("aadhaar").value = "";
+          document.getElementById("name").value = "";
+          document.getElementById("dob").value = "";
+          document.getElementById("gender").selectedIndex = 0;
+          document.getElementById("mobile").value = "";
+          document.getElementById("email").value = "";
+          fpSensor.className = "fp-sensor";
+          showStatus("fpStatus", "Click the scanner to enroll biometrics.", "");
+          updateSampleDots(0, totalSamples);
+          const grid = document.getElementById("enrollFpGrid");
+          const gallery = document.getElementById("enrollFpGallery");
+          if (grid) grid.innerHTML = "";
+          if (gallery) gallery.style.display = "none";
+        }, 2000);
       } catch (err) {
         console.error("Save failed", err);
         showStatus("fpStatus", "Failed to save registration record ❌", "error");
@@ -635,7 +675,7 @@ Requirements:
 - Add voting button to WordPress theme
 - Create modal popup for voting
 - Include voter registration form (Aadhaar 12 digits, name, email, gender dropdown, DOB with age calc, mobile)
-- Include fingerprint enrollment (5-7 samples, live preview)
+- Include fingerprint enrollment (5 samples, live preview)
 - Include voting screen (party selection, vote confirmation)
 - Connect to EVM API at [YOUR-API-URL]
 - Style to match WordPress theme
@@ -736,7 +776,7 @@ Requirements:
 - Create EVM voting component with TypeScript
 - Create HTML template for forms
 - Include registration form (Aadhaar, name, email, gender dropdown, DOB)
-- Include enrollment form (fingerprint simulation, 5-7 samples)
+- Include enrollment form (fingerprint simulation, 5 samples)
 - Include voting form (party selection)
 - Aadhaar validation (12 digits)
 - Gender dropdown selection
@@ -841,7 +881,7 @@ Integration type: [INTEGRATION-TYPE]
 Requirements:
 - Add voting button to site
 - Create registration form (Aadhaar 12 digits, name, email, gender dropdown, DOB auto age calc, mobile)
-- Create enrollment form (fingerprint 5-7 samples, live preview)
+- Create enrollment form (fingerprint 5 samples, live preview)
 - Create voting interface (party selection, confirmation)
 - Connect to EVM API
 - Responsive design
@@ -865,7 +905,7 @@ Requirements:
 - Aadhaar input (12 digits validation)
 - Gender dropdown selection
 - DOB with age calculation
-- Fingerprint capture (simulation, 5-7 samples with preview)
+- Fingerprint capture (simulation, 5 samples with preview)
 - Party selection for voting
 - Vote confirmation
 - Connect to API at [YOUR-API-URL]
@@ -938,7 +978,7 @@ Requirements:
 - Aadhaar validation (12 digits)
 - Gender dropdown
 - Age calculation from DOB
-- Fingerprint simulation (5-7 samples)
+- Fingerprint simulation (5 samples)
 - Party voting
 - Connect to API at [YOUR-API-URL]
 - Match WordPress theme

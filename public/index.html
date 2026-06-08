@@ -17,8 +17,11 @@
       </div>
       
       <nav class="nav-tabs">
-        <button class="tab-btn active" onclick="switchTab('terminal-tab')">
-          🗳️ Voting Terminal
+        <button class="tab-btn active" onclick="switchTab('registration-tab')">
+          📥 Registration
+        </button>
+        <button class="tab-btn" onclick="switchTab('voting-tab')">
+          🗳️ Secure Voting
         </button>
         <button class="tab-btn" onclick="switchTab('stats-tab')">
           📊 Stats Dashboard
@@ -28,8 +31,13 @@
         </button>
       </nav>
 
-      <div id="dbBadge" class="status-badge demo">
-        <span class="badge-dot"></span>Checking Connection...
+      <div style="display: flex; gap: 10px;">
+        <div id="hwBadge" class="status-badge error">
+          <span class="badge-dot"></span>Hardware: Checking...
+        </div>
+        <div id="dbBadge" class="status-badge demo">
+          <span class="badge-dot"></span>Checking Connection...
+        </div>
       </div>
     </div>
   </header>
@@ -37,10 +45,10 @@
   <main>
 
     <!-- ==============================================
-         TAB 1: VOTING TERMINAL
+         TAB 1: REGISTRATION TERMINAL
          ============================================== -->
-    <section id="terminal-tab" class="view-section active">
-      <div class="grid-container">
+    <section id="registration-tab" class="view-section active">
+      <div class="grid-container" style="grid-template-columns: 1fr; max-width: 600px; margin: 0 auto;">
         
         <!-- Registration Card -->
         <div class="card">
@@ -99,8 +107,6 @@
               <div class="sample-dot"></div>
               <div class="sample-dot"></div>
               <div class="sample-dot"></div>
-              <div class="sample-dot"></div>
-              <div class="sample-dot"></div>
             </div>
             <p id="fpStatus" class="status-text">Click the scanner to enroll biometrics.</p>
 
@@ -111,6 +117,15 @@
             </div>
           </div>
         </div>
+
+      </div>
+    </section>
+
+    <!-- ==============================================
+         TAB 2: VOTING TERMINAL
+         ============================================== -->
+    <section id="voting-tab" class="view-section">
+      <div class="grid-container" style="grid-template-columns: 1fr; max-width: 600px; margin: 0 auto;">
 
         <!-- Voting Panel Card -->
         <div class="card">
