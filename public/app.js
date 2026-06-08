@@ -288,7 +288,7 @@ let verifiedVoterData = null;
 // Helper to check if the local bridge server is online
 async function checkBridgeStatus() {
   try {
-    const res = await fetch("http://localhost:5002/fingerprint/capture", {
+    const res = await fetch("http://127.0.0.1:5002/fingerprint/capture", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ test: true })
@@ -298,6 +298,85 @@ async function checkBridgeStatus() {
     return false;
   }
 }
+
+// ================= STM32 Hardware Fingerprint Enrollment =================
+// Called when admin clicks "Enroll Fingerprint (HW)" button.
+// Calls the Flask bridge /stm32/enroll endpoint which signals the STM32
+// to begin enrollment and returns the result from Firestore.
+window.checkFingerprint = async function () {
+  const aadhaar  = document.getElementById("aadhaar").value.trim();
+  const name     = document.getElementById("name").value.trim();
+  const btn      = document.getElementById("hwEnrollBtn");
+  const fpSensor = document.getElementById("enrollFpSensor");
+
+  // Validate Aadhaar first
+  if (!aadhaar || !/^\d{12}$/.test(aadhaar)) {
+    showStatus("fpStatus", "Enter a valid 12-digit Aadhaar before hardware enroll ❌", "error");
+    return;
+  }
+  if (!name) {
+    showStatus("fpStatus", "Enter voter name before hardware enroll ❌", "error");
+    return;
+  }
+
+  // Visual feedback — start
+  if (btn) { btn.disabled = true; btn.innerText = "⏳ Enrolling..."; }
+  fpSensor.className = "fp-sensor scanning";
+  showStatus("fpStatus", "Sending enroll command to STM32 hardware... 🔌", "working");
+
+  try {
+    const response = await fetch("http://127.0.0.1:5002/stm32/enroll", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ voter_id: aadhaar, samples: 5 })
+    });
+
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const data = await response.json();
+
+    if (data.status === "success") {
+      fpSensor.className = "fp-sensor success";
+      showStatus("fpStatus", `✔ Fingerprint enrolled for ID: ${data.id} (${data.samples} samples)`, "success");
+
+      // Illuminate all 5 progress dots
+      updateSampleDots(5, 5);
+
+      // Update Firestore record with hw enrollment flag if in Firebase mode
+      if (isFirebaseMode) {
+        try {
+          await setDoc(doc(db, "VoterDB", aadhaar), {
+            fingerprint_status: "enrolled",
+            hw_enrolled: true
+          }, { merge: true });
+        } catch (fsErr) {
+          console.warn("[EVM] Firestore hw_enrolled merge failed:", fsErr);
+        }
+      }
+
+      // Refresh registered voters table if it's open
+      if (typeof startRegisteredListener === "function") startRegisteredListener();
+
+    } else {
+      fpSensor.className = "fp-sensor error";
+      showStatus("fpStatus", `Hardware enrollment failed: ${data.message || "Unknown error"} ❌`, "error");
+    }
+
+  } catch (err) {
+    fpSensor.className = "fp-sensor error";
+
+    // Bridge not running — show a clear message instead of a raw error
+    if (err instanceof TypeError || err.message.includes("fetch")) {
+      showStatus("fpStatus", "STM32 bridge offline — start fp_bridge.py first ❌", "error");
+    } else {
+      showStatus("fpStatus", `Hardware error: ${err.message} ❌`, "error");
+    }
+    console.error("[HW ENROLL]", err);
+
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerText = "🔌 Enroll Fingerprint (HW)"; }
+  }
+};
 
 // ================= Tab Navigation =================
 window.switchTab = function (tabId) {
@@ -364,7 +443,7 @@ window.startEnrollment = async function () {
 
     if (hasBridge) {
       try {
-        const res = await fetch("http://localhost:5002/fingerprint/capture", {
+        const res = await fetch("http://127.0.0.1:5002/fingerprint/capture", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ aadhaar })
@@ -406,7 +485,7 @@ window.startEnrollment = async function () {
           await setDoc(doc(db, "VoterDB", aadhaar), voterPayload);
           // Optional API call to local bridge store
           if (hasBridge) {
-            await fetch("http://localhost:5002/fingerprint/store", {
+            await fetch("http://127.0.0.1:5002/fingerprint/store", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ aadhaar, samples: registrationSamples })
@@ -512,7 +591,7 @@ window.startFingerprintCheck = async function () {
     if (hasBridge) {
       try {
         // Capture live sample with Aadhaar payload to guarantee deterministic match
-        const fpRes = await fetch("http://localhost:5002/fingerprint/capture", {
+        const fpRes = await fetch("http://127.0.0.1:5002/fingerprint/capture", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ aadhaar })
@@ -520,7 +599,7 @@ window.startFingerprintCheck = async function () {
         const fpData = await fpRes.json();
 
         // Verify template with server
-        const verifyRes = await fetch("http://localhost:5002/fingerprint/verify", {
+        const verifyRes = await fetch("http://127.0.0.1:5002/fingerprint/verify", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1301,7 +1380,7 @@ window.updateDevHubContent = function () {
   const integrationTypeInput = document.getElementById("devIntegrationType");
   const themeInput = document.getElementById("devTheme");
 
-  const apiUrl = apiUrlInput ? apiUrlInput.value.trim() : "http://localhost:5002";
+  const apiUrl = apiUrlInput ? apiUrlInput.value.trim() : "http://127.0.0.1:5002";
   const techStack = techStackInput ? techStackInput.value.trim() : "React";
   const integrationType = integrationTypeInput ? integrationTypeInput.value : "Modal";
   const theme = themeInput ? themeInput.value : "Dark";
