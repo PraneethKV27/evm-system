@@ -80,18 +80,37 @@ def parse_uart_line(line: str):
 
     Supported message formats:
       ENROLL_OK:ID=<aadhaar>:SAMPLES=<n>
+      MATCH_OK ID=<aadhaar>          ← STM32 fingerprint match success
       VERIFY_OK:ID=<aadhaar>
       VERIFY_FAIL:ID=<aadhaar>
+      MATCH_FAIL ID=<aadhaar>        ← STM32 fingerprint match failure
       VOTE_CAST:ID=<aadhaar>:PARTY=<party>
       ERROR:<message>
     """
     print(f"[UART] {line}")
 
     try:
-        parts = {k: v for k, v in (p.split("=") for p in line.split(":") if "=" in p)}
+        # Support both colon-separated and space-separated key=value formats
+        # e.g. "MATCH_OK ID=123456789012" or "VERIFY_OK:ID=123456789012"
+        normalized = line.replace(" ", ":")
+        parts = {k: v for k, v in (p.split("=") for p in normalized.split(":") if "=" in p)}
+
+        # ---- MATCH_OK (STM32 fingerprint matched) ----
+        if line.startswith("MATCH_OK"):
+            aadhaar = parts.get("ID")
+            if not aadhaar:
+                return
+            _handle_match_ok(aadhaar)
+
+        # ---- MATCH_FAIL (STM32 fingerprint mismatch) ----
+        elif line.startswith("MATCH_FAIL"):
+            aadhaar = parts.get("ID")
+            if not aadhaar:
+                return
+            _handle_match_fail(aadhaar)
 
         # ---- ENROLL_OK ----
-        if line.startswith("ENROLL_OK"):
+        elif line.startswith("ENROLL_OK"):
             aadhaar  = parts.get("ID")
             samples  = int(parts.get("SAMPLES", 5))
             if not aadhaar:
@@ -105,27 +124,19 @@ def parse_uart_line(line: str):
             }, merge=True)
             print(f"[FIRESTORE] Enrolled fingerprint for Aadhaar {aadhaar} ({samples} samples)")
 
-        # ---- VERIFY_OK ----
+        # ---- VERIFY_OK (alias for MATCH_OK from older firmware) ----
         elif line.startswith("VERIFY_OK"):
             aadhaar = parts.get("ID")
             if not aadhaar:
                 return
-            db.collection("VoterDB").document(aadhaar).set({
-                "last_verify_status": "matched",
-                "last_verify_at":     firestore.SERVER_TIMESTAMP,
-            }, merge=True)
-            print(f"[FIRESTORE] Verification SUCCESS for Aadhaar {aadhaar}")
+            _handle_match_ok(aadhaar)
 
         # ---- VERIFY_FAIL ----
         elif line.startswith("VERIFY_FAIL"):
             aadhaar = parts.get("ID")
             if not aadhaar:
                 return
-            db.collection("VoterDB").document(aadhaar).set({
-                "last_verify_status": "mismatch",
-                "last_verify_at":     firestore.SERVER_TIMESTAMP,
-            }, merge=True)
-            print(f"[FIRESTORE] Verification FAILED for Aadhaar {aadhaar}")
+            _handle_match_fail(aadhaar)
 
         # ---- VOTE_CAST ----
         elif line.startswith("VOTE_CAST"):
@@ -172,6 +183,43 @@ def parse_uart_line(line: str):
 
     except Exception as e:
         print(f"[PARSE ERROR] Could not process line '{line}': {e}")
+
+
+# ==========================
+# MATCH_OK / MATCH_FAIL Handlers
+# ==========================
+
+# In-memory store of the latest match result per Aadhaar.
+# The frontend polls /stm32/match-status?aadhaar=<id> to pick this up.
+_match_results: dict = {}   # { aadhaar: {"status": "verified"|"failed", "ts": <epoch>} }
+
+
+def _handle_match_ok(aadhaar: str):
+    """
+    STM32 sent MATCH_OK — fingerprint matched.
+    Updates Firestore: fingerprint_status = "verified"
+    Does NOT set flag=1 here; the web UI still controls the actual vote cast.
+    """
+    db.collection("VoterDB").document(aadhaar).set({
+        "fingerprint_status": "verified",
+        "last_verify_status": "matched",
+        "last_verify_at":     firestore.SERVER_TIMESTAMP,
+    }, merge=True)
+    _match_results[aadhaar] = {"status": "verified", "ts": time.time()}
+    print(f"[FIRESTORE] MATCH_OK — fingerprint_status=verified for Aadhaar {aadhaar}")
+
+
+def _handle_match_fail(aadhaar: str):
+    """
+    STM32 sent MATCH_FAIL — fingerprint did not match.
+    Updates Firestore: last_verify_status = "mismatch"
+    """
+    db.collection("VoterDB").document(aadhaar).set({
+        "last_verify_status": "mismatch",
+        "last_verify_at":     firestore.SERVER_TIMESTAMP,
+    }, merge=True)
+    _match_results[aadhaar] = {"status": "failed", "ts": time.time()}
+    print(f"[FIRESTORE] MATCH_FAIL — mismatch for Aadhaar {aadhaar}")
 
 
 def uart_listener():
@@ -244,6 +292,77 @@ def stm32_enroll():
     }, merge=True)
     print(f"[FIRESTORE] /stm32/enroll — Aadhaar {aadhaar}")
     return jsonify({"status": "success", "id": aadhaar, "samples": samples})
+
+
+@app.route("/stm32/verify", methods=["POST"])
+def stm32_verify():
+    """
+    Called by STM32 (or the web frontend) to report a MATCH_OK result.
+
+    Simulates the UART message "MATCH_OK ID=<aadhaar>" over HTTP.
+    Updates Firestore: fingerprint_status = "verified"
+
+    Body: { "voter_id": "123456789012" }
+          or { "line": "MATCH_OK ID=123456789012" }
+    """
+    data    = request.json or {}
+    line    = data.get("line", "").strip()
+
+    if line:
+        # Accept raw UART line format
+        parse_uart_line(line)
+        return jsonify({"status": "ok", "received": line})
+
+    aadhaar = data.get("voter_id") or data.get("aadhaar")
+    if not aadhaar:
+        return jsonify({"status": "error", "message": "Missing voter_id"}), 400
+
+    _handle_match_ok(aadhaar)
+    return jsonify({
+        "status":             "success",
+        "id":                 aadhaar,
+        "fingerprint_status": "verified",
+        "message":            "Fingerprint Verified — Voting Enabled"
+    })
+
+
+@app.route("/stm32/match-status", methods=["GET"])
+def stm32_match_status():
+    """
+    Polled by the web frontend every second after the voter presses 'Verify Biometrics'.
+    Returns the latest match result for a given Aadhaar.
+
+    Query param: ?aadhaar=<12-digit>
+    Response:
+      { "status": "verified" | "failed" | "pending" }
+    """
+    aadhaar = request.args.get("aadhaar", "").strip()
+    if not aadhaar:
+        return jsonify({"status": "error", "message": "Missing aadhaar param"}), 400
+
+    result = _match_results.get(aadhaar)
+
+    # Expire results older than 60 seconds to avoid stale state
+    if result and (time.time() - result["ts"]) > 60:
+        del _match_results[aadhaar]
+        result = None
+
+    if result:
+        # Consume the result so a second poll returns pending
+        del _match_results[aadhaar]
+        return jsonify({"status": result["status"], "aadhaar": aadhaar})
+
+    # Also check Firestore directly (covers cases where bridge restarted)
+    try:
+        voter_doc = db.collection("VoterDB").document(aadhaar).get()
+        if voter_doc.exists:
+            fs_status = voter_doc.to_dict().get("fingerprint_status", "")
+            if fs_status == "verified":
+                return jsonify({"status": "verified", "aadhaar": aadhaar, "source": "firestore"})
+    except Exception as e:
+        print(f"[MATCH-STATUS] Firestore read error: {e}")
+
+    return jsonify({"status": "pending", "aadhaar": aadhaar})
 
 
 # ==========================
@@ -334,9 +453,11 @@ def verify():
                     raw = ser.readline()
                     if raw:
                         line = raw.decode("utf-8", errors="ignore").strip()
-                        if line.startswith("VERIFY_OK"):
+                        if line.startswith("VERIFY_OK") or line.startswith("MATCH_OK"):
+                            _handle_match_ok(aadhaar)
                             return jsonify({"match": True, "source": "hardware"})
-                        if line.startswith("VERIFY_FAIL"):
+                        if line.startswith("VERIFY_FAIL") or line.startswith("MATCH_FAIL"):
+                            _handle_match_fail(aadhaar)
                             return jsonify({"match": False, "source": "hardware"})
                     time.sleep(0.1)
             except Exception as hw_err:
@@ -440,7 +561,8 @@ if __name__ == "__main__":
     print(f"[OK] SecEVM Fingerprint Bridge running on port {FLASK_PORT}")
     print(f"[INFO] STM32 port: {SERIAL_PORT} @ {SERIAL_BAUD} baud")
     print(f"[INFO] Endpoints: /fingerprint/capture  /fingerprint/store  /fingerprint/verify")
-    print(f"[INFO] STM32 push: /stm32/event  /stm32/enroll")
+    print(f"[INFO] STM32 push: /stm32/event  /stm32/enroll  /stm32/verify")
+    print(f"[INFO] Poll:       /stm32/match-status?aadhaar=<12-digit>")
     print(f"[INFO] Status:     /status")
 
     app.run(host="0.0.0.0", port=FLASK_PORT)

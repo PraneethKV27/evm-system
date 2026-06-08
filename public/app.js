@@ -590,30 +590,76 @@ window.startFingerprintCheck = async function () {
 
     if (hasBridge) {
       try {
-        // Capture live sample with Aadhaar payload to guarantee deterministic match
-        const fpRes = await fetch("http://127.0.0.1:5002/fingerprint/capture", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ aadhaar })
-        });
-        const fpData = await fpRes.json();
+        // Send VERIFY command to STM32 via bridge
+        ser_write_cmd: {
+          try {
+            await fetch("http://127.0.0.1:5002/fingerprint/capture", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ aadhaar })
+            });
+          } catch (_) { /* ignore */ }
+        }
 
-        // Verify template with server
-        const verifyRes = await fetch("http://127.0.0.1:5002/fingerprint/verify", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            aadhaar,
-            template: fpData.template
-          })
+        // Poll /stm32/match-status for up to 10 s waiting for MATCH_OK from STM32
+        const POLL_INTERVAL = 1000;
+        const POLL_TIMEOUT  = 10000;
+        let   elapsed       = 0;
+
+        showStatus("fpLiveStatus", "Waiting for STM32 fingerprint result... 🔌", "working");
+
+        const pollResult = await new Promise((resolve) => {
+          const timer = setInterval(async () => {
+            elapsed += POLL_INTERVAL;
+            try {
+              const res  = await fetch(
+                `http://127.0.0.1:5002/stm32/match-status?aadhaar=${aadhaar}`
+              );
+              const data = await res.json();
+
+              if (data.status === "verified") {
+                clearInterval(timer);
+                resolve(true);
+              } else if (data.status === "failed") {
+                clearInterval(timer);
+                resolve(false);
+              } else if (elapsed >= POLL_TIMEOUT) {
+                clearInterval(timer);
+                // Timeout — fall back to software verify
+                resolve(null);
+              }
+            } catch (_) {
+              clearInterval(timer);
+              resolve(null); // bridge error — fall through to software verify
+            }
+          }, POLL_INTERVAL);
         });
-        const result = await verifyRes.json();
-        matched = result.match;
+
+        if (pollResult === true) {
+          matched = true;
+        } else if (pollResult === false) {
+          matched = false;
+        } else {
+          // null = timeout or bridge error — fall back to template-based software verify
+          const fpRes = await fetch("http://127.0.0.1:5002/fingerprint/capture", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ aadhaar })
+          });
+          const fpData = await fpRes.json();
+          const verifyRes = await fetch("http://127.0.0.1:5002/fingerprint/verify", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ aadhaar, template: fpData.template })
+          });
+          const result = await verifyRes.json();
+          matched = result.match;
+        }
       } catch (e) {
-        matched = true; // fallback simulated success
+        matched = true; // network error fallback
       }
     } else {
-      // Simulation fallback: 100% success for registered, eligible voter
+      // No bridge — full simulation, always succeeds for registered voter
       matched = true;
     }
 
@@ -626,7 +672,24 @@ window.startFingerprintCheck = async function () {
       liveScanVerified = true;
       verifiedVoterData = voter;
       fpSensor.className = "fp-sensor success";
-      showStatus("fpLiveStatus", "Fingerprint Verified! Proceed to vote ✔", "success");
+      showStatus("fpLiveStatus", "Fingerprint Verified — Voting Enabled ✔", "success");
+
+      // Update Firestore fingerprint_status via bridge (non-blocking)
+      if (hasBridge) {
+        fetch("http://127.0.0.1:5002/stm32/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ voter_id: aadhaar })
+        }).catch(() => {});
+      }
+
+      // If in Firebase mode, also update directly
+      if (isFirebaseMode) {
+        setDoc(doc(db, "VoterDB", aadhaar), {
+          fingerprint_status: "verified",
+          last_verify_status: "matched"
+        }, { merge: true }).catch(() => {});
+      }
       
       // Update visual comparison success state
       if (liveScanBox) {
