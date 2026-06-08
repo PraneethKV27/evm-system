@@ -1,6 +1,6 @@
 # 🛡️ SecEVM - Biometric EVM Secure Voting System
 
-SecEVM is a secure, web-based Electronic Voting Machine (EVM) simulation built with biometric fingerprint verification, real-time Firebase Firestore integration, and a clean dark-mode UI. It covers the full voting lifecycle — from voter registration to ballot casting — with live data dashboards.
+SecEVM is a secure, web-based Electronic Voting Machine (EVM) simulation built with biometric fingerprint verification, real-time Firebase Firestore integration, STM32 UART hardware support, and a clean dark-mode UI. It covers the full voting lifecycle — from voter registration to ballot casting — with live data dashboards.
 
 ---
 
@@ -10,28 +10,33 @@ SecEVM is a secure, web-based Electronic Voting Machine (EVM) simulation built w
 - Voter registration with Aadhaar number validation (exactly 12 digits)
 - Collects name, mobile, email, gender, and date of birth
 - Auto age calculation with 18+ eligibility check
-- Biometric fingerprint enrollment — captures 5 samples with visual gallery preview
+- Two enrollment modes:
+  - **🖐️ Capture Fingerprint** — software simulation, captures 5 samples with visual gallery preview
+  - **🔌 Enroll Fingerprint (HW)** — calls Flask/Node bridge to signal STM32 hardware enrollment
 - Saves voter record to Firebase Firestore (or localStorage in demo mode)
 
 ### 🗳️ Secure Voting
 - Aadhaar-based voter lookup with real-time pre-verification card
 - Shows voter name, age eligibility, and voting status before fingerprint scan
 - Biometric verification with live vs. registered fingerprint comparison panel
+- When STM32 bridge is running: polls `/stm32/match-status` every second for up to 10s waiting for `MATCH_OK` from hardware
+- Displays **"Fingerprint Verified — Voting Enabled"** on successful match
+- Falls back to software template verify if STM32 times out or is offline
 - Secure ballot with 5 party options + NOTA
-- One-vote-per-voter enforced via Firestore transaction
+- One-vote-per-voter enforced via Firestore atomic transaction
 
 ### 📊 Stats Dashboard
 - Real-time vote counts and percentage bars for all parties
 - Total votes cast, biometric verification rate, security status
 
-### 👥 Registered Voters *(New)*
-- Live table of all registered voters from Firebase (updates instantly)
-- Columns: masked Aadhaar, name, age, gender, mobile, email, DOB, eligibility, vote status
-- Summary bar: total registered, eligible, voted, pending
-- Search by name or Aadhaar, filter by eligibility/vote status
+### 👥 Registered Voters
+- Live table of all registered voters from Firebase (`onSnapshot` — updates instantly)
+- Columns: masked Aadhaar, name, age, gender, mobile, email, DOB, eligibility badge, vote status badge
+- Summary bar: total registered, eligible, already voted, pending
+- Search by name or Aadhaar, filter by eligible / voted / pending
 
-### ✅ Completed Votes *(New)*
-- Live table of all voters who have completed their vote
+### ✅ Completed Votes
+- Live table of all voters who have completed their vote (`onSnapshot`)
 - Columns: masked Aadhaar, name, age, gender, party voted, timestamp
 - Summary bar: total votes, leading party, leader vote count, voter turnout %
 - Search by name or Aadhaar, filter by party
@@ -40,6 +45,39 @@ SecEVM is a secure, web-based Electronic Voting Machine (EVM) simulation built w
 - Integration code templates for React, Next.js, Vue, Angular, WordPress, Shopify, Drupal, and more
 - AI prompt generator for Claude to scaffold full voting components
 - Configurable API URL, tech stack, integration type, and theme
+
+---
+
+## 🖥️ Hardware Badge (Header)
+
+The header shows two real-time status badges that update every 3 seconds:
+
+| Badge | State | Meaning |
+|-------|-------|---------|
+| 🟢 `Hardware: Live` | Green | STM32 physically connected and detected |
+| 🟡 `STM32: Not Connected` | Yellow | Bridge server running but no STM32 plugged in |
+| 🔴 `Hardware: Disconnected` | Red | Bridge server (`server.js` or `fp_bridge.py`) not running |
+| 🟢 `Firebase Live` | Cyan | Connected to Firebase Firestore |
+| 🟡 `Demo Mode` | Purple | Running on localStorage fallback |
+
+> The Node.js server auto-detects STM32 by USB Vendor ID (`0483` = STMicroelectronics) and manufacturer name — no manual COM port config needed.
+
+---
+
+## 🔄 STM32 Verification Workflow
+
+```
+Voter enters Aadhaar  →  Frontend calls /fingerprint/capture
+                      →  Bridge sends VERIFY:<aadhaar> to STM32 via UART
+                      →  STM32 scans finger, sends back:
+                              MATCH_OK ID=<aadhaar>    (match)
+                              MATCH_FAIL ID=<aadhaar>  (mismatch)
+                      →  Bridge stores result in memory + updates Firestore:
+                              { fingerprint_status: "verified" }
+                      →  Frontend polls /stm32/match-status every 1s (up to 10s)
+                      →  On verified: displays "Fingerprint Verified — Voting Enabled ✔"
+                      →  Ballot unlocked — voter selects party and casts vote
+```
 
 ---
 
@@ -79,7 +117,17 @@ cd ..
 node fingerprint-server/server.js
 ```
 
-Runs on `http://localhost:5002` — handles fingerprint capture, store, and verify endpoints.
+Runs on `http://localhost:5002`. Handles all fingerprint and STM32 endpoints.  
+STM32 is **auto-detected** by USB VID — just plug it in and the badge turns green within 3 seconds.
+
+To pin a specific COM port:
+```bash
+# Windows
+set STM32_PORT=COM3 && node fingerprint-server/server.js
+
+# Linux / macOS
+STM32_PORT=/dev/ttyUSB0 node fingerprint-server/server.js
+```
 
 ### 4. Start the web server
 
@@ -102,21 +150,25 @@ Navigate to **http://localhost:3000** in your browser.
 ```
 evm-system/
 ├── public/
-│   ├── index.html          # Main UI — all 6 tabs
-│   ├── app.js              # Firebase logic, tab controllers, live listeners
-│   ├── style.css           # Dark-mode UI styles
-│   └── fingerprint.png     # Fingerprint icon asset
+│   ├── index.html              # Main UI — all 6 tabs
+│   ├── app.js                  # Firebase logic, tab controllers, live listeners,
+│   │                           # STM32 polling, hardware badge
+│   ├── style.css               # Dark-mode UI styles
+│   └── fingerprint.png         # Fingerprint icon asset
 ├── fingerprint-server/
-│   ├── server.js           # Node.js Express fingerprint API (port 5002)
+│   ├── server.js               # Node.js Express server (port 5002)
+│   │                           # Auto-detects STM32 via serialport USB VID
+│   │                           # Endpoints: /status, /fingerprint/*, /stm32/*
 │   └── package.json
 ├── fingerprint_bridge/
-│   └── fp_bridge.py        # Python bridge (Flask + pyserial) — STM32 UART → Firestore
-│                           # Endpoints: /fingerprint/capture|store|verify, /stm32/event|enroll, /vote, /status
+│   └── fp_bridge.py            # Python bridge (Flask + pyserial) — alternative to Node.js server
+│                               # Connects directly to STM32 UART + Firebase Admin SDK
+│                               # Endpoints: /fingerprint/*, /stm32/*, /vote, /status
 ├── functions/
-│   └── index.js            # Firebase Cloud Functions (scaffolded)
-├── serve.js                # Simple Node.js HTTP server for the frontend (port 3000)
-├── firebase.json           # Firebase hosting + Firestore config
-├── firestore.rules         # Firestore security rules
+│   └── index.js                # Firebase Cloud Functions (scaffolded)
+├── serve.js                    # Simple Node.js HTTP server for the frontend (port 3000)
+├── firebase.json               # Firebase hosting + Firestore config
+├── firestore.rules             # Firestore security rules
 └── firestore.indexes.json
 ```
 
@@ -124,42 +176,35 @@ evm-system/
 
 ## 🔌 API Endpoints
 
-### Fingerprint Server — Node.js (`fingerprint-server/server.js`, port 5002)
-Used when no hardware is attached (simulated mode).
+### Node.js Fingerprint Server (`fingerprint-server/server.js`, port 5002)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/fingerprint/capture` | Returns a simulated fingerprint template |
+| GET  | `/status` | Hardware badge — returns `{ hardware: "connected" \| "disconnected" }` |
+| POST | `/fingerprint/capture` | Returns fingerprint template (hardware or simulated) |
 | POST | `/fingerprint/store` | Stores enrolled samples in memory |
-| POST | `/fingerprint/verify` | Verifies a live scan against in-memory samples |
+| POST | `/fingerprint/verify` | Verifies a scan against stored samples |
+| POST | `/stm32/enroll` | Enroll signal `{ voter_id, samples }` → stores STM32 templates |
+| POST | `/stm32/verify` | Mark match result `{ voter_id }` → sets `verified` status |
+| POST | `/stm32/event` | Push raw UART line `{ line: "MATCH_OK ID=..." }` |
+| GET  | `/stm32/match-status?aadhaar=` | Frontend polls this for MATCH_OK result |
 
 ---
 
-### Python Bridge — STM32 UART (`fingerprint_bridge/fp_bridge.py`, port 5002)
-Used when the STM32 fingerprint module is physically connected. Replaces the Node.js server.
+### Python Bridge (`fingerprint_bridge/fp_bridge.py`, port 5002)
+Alternative to Node.js server — use this when you want direct Firebase Admin SDK writes from hardware events.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/fingerprint/capture` | Triggers live scan on STM32 via UART, falls back to Firestore |
+| GET  | `/status` | Bridge health + hardware connection state |
+| POST | `/fingerprint/capture` | Triggers UART capture, falls back to Firestore |
 | POST | `/fingerprint/store` | Saves enrolled samples to Firestore |
-| POST | `/fingerprint/verify` | Sends `VERIFY` command to STM32, falls back to Firestore match |
-| POST | `/vote` | Casts a vote via Firestore atomic transaction |
-| POST | `/stm32/event` | Accepts raw UART line as JSON `{ "line": "ENROLL_OK:ID=..."}` |
-| POST | `/stm32/enroll` | Direct enroll signal from STM32 `{ "voter_id": "...", "samples": 5 }` |
-| GET  | `/status` | Returns bridge health, hardware connection state, Firebase status |
-
-#### STM32 UART Message Format
-
-The bridge reads lines from the STM32 over serial and maps them to Firestore actions:
-
-| UART Message | Action |
-|---|---|
-| `ENROLL_OK:ID=<aadhaar>:SAMPLES=<n>` | Saves `fp_samples` + `fingerprint_status: enrolled` to VoterDB |
-| `VERIFY_OK:ID=<aadhaar>` | Updates `last_verify_status: matched` in VoterDB |
-| `VERIFY_FAIL:ID=<aadhaar>` | Updates `last_verify_status: mismatch` in VoterDB |
-| `VOTE_CAST:ID=<aadhaar>:PARTY=<party>` | Atomic vote transaction — updates VoterDB + PartyDB |
-| `TEMPLATE:<template_string>` | Returned by STM32 in response to a `CAPTURE:` command |
-| `ERROR:<message>` | Logged to console |
+| POST | `/fingerprint/verify` | Sends `VERIFY:` to STM32, falls back to Firestore match |
+| POST | `/vote` | Atomic vote transaction via Firebase Admin |
+| POST | `/stm32/enroll` | Direct enroll `{ voter_id, samples }` → Firestore |
+| POST | `/stm32/verify` | MATCH_OK signal → sets `fingerprint_status: "verified"` in Firestore |
+| POST | `/stm32/event` | Raw UART line push |
+| GET  | `/stm32/match-status?aadhaar=` | Poll match result |
 
 #### Running the Python Bridge
 
@@ -169,15 +214,32 @@ cd fingerprint_bridge
 # Install dependencies
 pip install flask flask-cors firebase-admin pyserial
 
-# Set your COM port (or use env variable)
-set STM32_PORT=COM3       # Windows
+# Place serviceAccountKey.json in fingerprint_bridge/
+# Set COM port
+set STM32_PORT=COM3        # Windows
 export STM32_PORT=/dev/ttyUSB0  # Linux/macOS
 
-# Place serviceAccountKey.json in fingerprint_bridge/
 python fp_bridge.py
 ```
 
-> The bridge runs on port `5002` by default — same as the Node.js server. Run only one at a time.
+> Run only one backend at a time (Node.js server OR Python bridge) — both use port 5002.
+
+---
+
+## 📡 STM32 UART Message Format
+
+Both backends understand the same UART messages from STM32:
+
+| UART Message | Action |
+|---|---|
+| `MATCH_OK ID=<aadhaar>` | `fingerprint_status: "verified"` → unlocks ballot on frontend |
+| `MATCH_FAIL ID=<aadhaar>` | `last_verify_status: "mismatch"` → shows error on frontend |
+| `ENROLL_OK:ID=<aadhaar>:SAMPLES=<n>` | Saves `fp_samples` + `fingerprint_status: "enrolled"` |
+| `VERIFY_OK:ID=<aadhaar>` | Alias for `MATCH_OK` (older firmware) |
+| `VERIFY_FAIL:ID=<aadhaar>` | Alias for `MATCH_FAIL` (older firmware) |
+| `VOTE_CAST:ID=<aadhaar>:PARTY=<party>` | Atomic vote transaction (Python bridge only) |
+| `TEMPLATE:<string>` | Returned by STM32 in response to `CAPTURE:<aadhaar>` command |
+| `ERROR:<message>` | Logged to console |
 
 ---
 
@@ -188,16 +250,21 @@ python fp_bridge.py
 - Biometric fingerprint match required before ballot is unlocked
 - Aadhaar numbers are masked (`XXXX-XXXX-XXXX`) in all data display tables
 - Firebase Firestore rules control read/write access
+- Hardware verification preferred over software fallback when STM32 is connected
 
 ---
 
 ## 🛠️ Tech Stack
 
-- **Frontend**: Vanilla HTML, CSS, JavaScript (ES Modules)
-- **Database**: Firebase Firestore (real-time `onSnapshot`)
-- **Fingerprint Server**: Node.js + Express
-- **Python Bridge** *(optional)*: Flask + `firebase-admin` for hardware integration
-- **Hosting**: Firebase Hosting / local Node.js server
+| Layer | Technology |
+|-------|-----------|
+| Frontend | Vanilla HTML, CSS, JavaScript (ES Modules) |
+| Database | Firebase Firestore (real-time `onSnapshot`) |
+| Fingerprint Server | Node.js + Express + `serialport` (auto USB detection) |
+| Python Bridge | Flask + `firebase-admin` + `pyserial` |
+| Hardware | STM32 microcontroller (USB CDC / UART @ 115200 baud) |
+| Web Server | Node.js HTTP server (`serve.js`) |
+| Hosting | Firebase Hosting / local `serve.js` |
 
 ---
 
@@ -205,9 +272,20 @@ python fp_bridge.py
 
 | Tab | Description |
 |-----|-------------|
-| 📥 Registration | Register voters with biometric enrollment |
-| 🗳️ Secure Voting | Aadhaar + fingerprint verified ballot casting |
+| 📥 Registration | Register voters — software or STM32 hardware fingerprint enrollment |
+| 🗳️ Secure Voting | Aadhaar + fingerprint verified ballot casting with STM32 MATCH_OK flow |
 | 📊 Stats Dashboard | Real-time vote results and party charts |
-| 👥 Registered Voters | Live table of all registered voters with full details |
-| ✅ Completed Votes | Live table of voters who have cast their vote |
-| 🔌 Developer Hub | Integration code and AI prompt generator |
+| 👥 Registered Voters | Live Firebase table of all registered voters with full details |
+| ✅ Completed Votes | Live Firebase table of voters who have cast their vote |
+| 🔌 Developer Hub | Integration code templates and AI prompt generator |
+
+---
+
+## 🧪 Testing Without Hardware
+
+All features work without an STM32 connected:
+- Hardware badge shows 🟡 `STM32: Not Connected`
+- Fingerprint enrollment uses simulated `FP_XXXXXXXX` templates
+- Fingerprint verification auto-succeeds for registered eligible voters
+- All Firestore reads/writes work normally
+- Switch to Demo Mode (no Firebase config needed) for fully offline testing
