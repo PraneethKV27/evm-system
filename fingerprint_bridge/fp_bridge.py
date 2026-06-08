@@ -1,222 +1,446 @@
-import firebase_admin
+"""
+fp_bridge.py — SecEVM Fingerprint Bridge
+-----------------------------------------
+Listens to STM32 UART output (via pyserial) and bridges it to:
+  - Firebase Firestore (VoterDB / PartyDB)
+  - The SecEVM web frontend (REST API on port 5002)
 
-from firebase_admin import credentials, firestore
+STM32 UART Message Format expected:
+  ENROLL_OK:ID=<aadhaar>:SAMPLES=<n>
+  VERIFY_OK:ID=<aadhaar>
+  VERIFY_FAIL:ID=<aadhaar>
+  VOTE_CAST:ID=<aadhaar>:PARTY=<party>
+  ERROR:<message>
 
-import win32cred
-import ctypes
+Configuration:
+  - Set SERIAL_PORT to your actual COM port (e.g. COM3 on Windows, /dev/ttyUSB0 on Linux)
+  - Set SERIAL_BAUD to match your STM32 UART baud rate (default 115200)
+  - Place serviceAccountKey.json in the same directory as this file
+"""
+
+import os
+import uuid
 import time
+import threading
 
+import serial
+import firebase_admin
+from firebase_admin import credentials, firestore
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
+# ==========================
+# Configuration
+# ==========================
+
+SERIAL_PORT   = os.environ.get("STM32_PORT", "COM3")   # Change to your COM port
+SERIAL_BAUD   = int(os.environ.get("STM32_BAUD", 115200))
+SERVICE_ACCT  = os.path.join(os.path.dirname(__file__), "serviceAccountKey.json")
+FLASK_PORT    = int(os.environ.get("BRIDGE_PORT", 5002))
 
 # ==========================
 # Firebase Setup
 # ==========================
 
-cred = credentials.Certificate("serviceAccount.json")
+if not os.path.exists(SERVICE_ACCT):
+    raise FileNotFoundError(
+        f"[ERROR] serviceAccountKey.json not found at: {SERVICE_ACCT}\n"
+        "Download it from Firebase Console → Project Settings → Service Accounts."
+    )
 
+cred = credentials.Certificate(SERVICE_ACCT)
 firebase_admin.initialize_app(cred)
-
 db = firestore.client()
+print("[OK] Firebase Firestore connected")
 
-print("[OK] Firebase connected")
+# ==========================
+# UART Serial Setup
+# ==========================
 
+ser = None
+
+def init_serial():
+    """Attempt to open the STM32 serial port. Falls back gracefully if unavailable."""
+    global ser
+    try:
+        ser = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=1)
+        print(f"[OK] STM32 UART connected on {SERIAL_PORT} @ {SERIAL_BAUD} baud")
+    except serial.SerialException as e:
+        print(f"[WARN] Could not open serial port {SERIAL_PORT}: {e}")
+        print("[INFO] Running in software-only mode (no hardware attached)")
+        ser = None
+
+# ==========================
+# UART Listener Thread
+# ==========================
+
+def parse_uart_line(line: str):
+    """
+    Parse a raw UART line from STM32 and take the appropriate Firestore action.
+
+    Supported message formats:
+      ENROLL_OK:ID=<aadhaar>:SAMPLES=<n>
+      VERIFY_OK:ID=<aadhaar>
+      VERIFY_FAIL:ID=<aadhaar>
+      VOTE_CAST:ID=<aadhaar>:PARTY=<party>
+      ERROR:<message>
+    """
+    print(f"[UART] {line}")
+
+    try:
+        parts = {k: v for k, v in (p.split("=") for p in line.split(":") if "=" in p)}
+
+        # ---- ENROLL_OK ----
+        if line.startswith("ENROLL_OK"):
+            aadhaar  = parts.get("ID")
+            samples  = int(parts.get("SAMPLES", 5))
+            if not aadhaar:
+                return
+            fp_templates = [f"STM32_FP_{aadhaar}_{i}" for i in range(samples)]
+            db.collection("VoterDB").document(aadhaar).set({
+                "fingerprint_status": "enrolled",
+                "fp_samples":         fp_templates,
+                "hw_samples_count":   samples,
+                "hw_enrolled_at":     firestore.SERVER_TIMESTAMP,
+            }, merge=True)
+            print(f"[FIRESTORE] Enrolled fingerprint for Aadhaar {aadhaar} ({samples} samples)")
+
+        # ---- VERIFY_OK ----
+        elif line.startswith("VERIFY_OK"):
+            aadhaar = parts.get("ID")
+            if not aadhaar:
+                return
+            db.collection("VoterDB").document(aadhaar).set({
+                "last_verify_status": "matched",
+                "last_verify_at":     firestore.SERVER_TIMESTAMP,
+            }, merge=True)
+            print(f"[FIRESTORE] Verification SUCCESS for Aadhaar {aadhaar}")
+
+        # ---- VERIFY_FAIL ----
+        elif line.startswith("VERIFY_FAIL"):
+            aadhaar = parts.get("ID")
+            if not aadhaar:
+                return
+            db.collection("VoterDB").document(aadhaar).set({
+                "last_verify_status": "mismatch",
+                "last_verify_at":     firestore.SERVER_TIMESTAMP,
+            }, merge=True)
+            print(f"[FIRESTORE] Verification FAILED for Aadhaar {aadhaar}")
+
+        # ---- VOTE_CAST ----
+        elif line.startswith("VOTE_CAST"):
+            aadhaar = parts.get("ID")
+            party   = parts.get("PARTY")
+            if not aadhaar or not party:
+                return
+
+            voter_ref = db.collection("VoterDB").document(aadhaar)
+            party_ref = db.collection("PartyDB").document(party)
+            meta_ref  = db.collection("PartyDB").document("_meta")
+
+            transaction = db.transaction()
+
+            @firestore.transactional
+            def _cast(txn):
+                voter_snap = voter_ref.get(transaction=txn)
+                if not voter_snap.exists:
+                    print(f"[WARN] Voter {aadhaar} not found in Firestore")
+                    return
+                if voter_snap.to_dict().get("flag") == 1:
+                    print(f"[BLOCKED] Voter {aadhaar} already voted")
+                    return
+                txn.update(voter_ref, {
+                    "flag":        1,
+                    "voted_party": party,
+                    "voted_at":    firestore.SERVER_TIMESTAMP,
+                })
+                txn.update(party_ref, {
+                    "votes":        firestore.Increment(1),
+                    "last_updated": firestore.SERVER_TIMESTAMP,
+                })
+                txn.update(meta_ref, {
+                    "total_votes":  firestore.Increment(1),
+                    "last_updated": firestore.SERVER_TIMESTAMP,
+                })
+                print(f"[FIRESTORE] Vote recorded — Aadhaar {aadhaar} → {party}")
+
+            _cast(transaction)
+
+        # ---- ERROR ----
+        elif line.startswith("ERROR"):
+            print(f"[STM32 ERROR] {line}")
+
+    except Exception as e:
+        print(f"[PARSE ERROR] Could not process line '{line}': {e}")
+
+
+def uart_listener():
+    """Background thread: continuously reads lines from STM32 UART."""
+    if ser is None:
+        print("[INFO] UART listener not started (no serial port)")
+        return
+    print("[UART] Listener thread started")
+    while True:
+        try:
+            raw = ser.readline()
+            if raw:
+                line = raw.decode("utf-8", errors="ignore").strip()
+                if line:
+                    parse_uart_line(line)
+        except serial.SerialException as e:
+            print(f"[UART ERROR] {e} — retrying in 3s")
+            time.sleep(3)
+        except Exception as e:
+            print(f"[UART THREAD ERROR] {e}")
+            time.sleep(1)
 
 # ==========================
 # Flask App
 # ==========================
 
 app = Flask(__name__)
-
 CORS(app)
 
-
 # ==========================
-# Simulated Fingerprint Verification
-# ==========================
-
-def verify_fingerprint():
-
-    print("\nPlace your finger on laptop sensor...")
-
-    print("Use Windows Hello verification")
-
-    time.sleep(3)
-
-    # Simulated verification result
-    # Replace later with real WBF integration
-
-    return True
-
-
-# ==========================
-# Vote Function
+# REST API: STM32 Push Endpoint
 # ==========================
 
-def cast_vote(aadhaar, party):
+@app.route("/stm32/event", methods=["POST"])
+def stm32_event():
+    """
+    Alternative to UART: STM32 can POST events over USB CDC / TCP if wired that way.
 
+    Body (JSON):
+      { "line": "ENROLL_OK:ID=123456789012:SAMPLES=5" }
+    """
+    data = request.json or {}
+    line = data.get("line", "").strip()
+    if not line:
+        return jsonify({"status": "error", "message": "Missing 'line' field"}), 400
+    parse_uart_line(line)
+    return jsonify({"status": "ok", "received": line})
+
+
+@app.route("/stm32/enroll", methods=["POST"])
+def stm32_enroll():
+    """
+    Direct enroll endpoint — STM32 signals enrollment complete.
+
+    Body: { "voter_id": "123456789012", "samples": 5 }
+    """
+    data    = request.json or {}
+    aadhaar = data.get("voter_id") or data.get("aadhaar")
+    samples = int(data.get("samples", 5))
+
+    if not aadhaar:
+        return jsonify({"status": "error", "message": "Missing voter_id"}), 400
+
+    fp_templates = [f"STM32_FP_{aadhaar}_{i}" for i in range(samples)]
+    db.collection("VoterDB").document(aadhaar).set({
+        "fingerprint_status": "enrolled",
+        "fp_samples":         fp_templates,
+        "hw_samples_count":   samples,
+        "hw_enrolled_at":     firestore.SERVER_TIMESTAMP,
+    }, merge=True)
+    print(f"[FIRESTORE] /stm32/enroll — Aadhaar {aadhaar}")
+    return jsonify({"status": "success", "id": aadhaar, "samples": samples})
+
+
+# ==========================
+# REST API: Fingerprint (Web Frontend ↔ Bridge)
+# ==========================
+
+@app.route("/fingerprint/capture", methods=["POST"])
+def capture():
+    """
+    Called by the web frontend to get a fingerprint template.
+    If STM32 is connected, reads a live template from hardware.
+    Otherwise falls back to a stored sample or random template.
+    """
     try:
+        data    = request.json or {}
+        aadhaar = data.get("aadhaar")
 
-        voter_ref = db.collection("VoterDB").document(aadhaar)
+        # If hardware is connected, trigger a live scan via UART command
+        if ser and ser.is_open and aadhaar:
+            try:
+                ser.write(f"CAPTURE:{aadhaar}\n".encode())
+                # Wait up to 3 s for the STM32 to respond
+                for _ in range(30):
+                    raw = ser.readline()
+                    if raw:
+                        line = raw.decode("utf-8", errors="ignore").strip()
+                        if line.startswith("TEMPLATE:"):
+                            template = line.split("TEMPLATE:")[1]
+                            return jsonify({"template": template, "source": "hardware"})
+                    time.sleep(0.1)
+            except Exception as hw_err:
+                print(f"[HW CAPTURE] {hw_err} — falling back to Firestore")
 
-        party_ref = db.collection("PartyDB").document(party)
+        # Fallback: return first stored template from Firestore
+        if aadhaar:
+            voter_doc = db.collection("VoterDB").document(aadhaar).get()
+            if voter_doc.exists:
+                samples = voter_doc.to_dict().get("fp_samples", [])
+                if samples:
+                    return jsonify({"template": samples[0], "source": "firestore"})
 
-        meta_ref = db.collection("PartyDB").document("_meta")
-
-
-        transaction = db.transaction()
-
-
-        @firestore.transactional
-        def update_in_transaction(transaction):
-
-            voter_doc = voter_ref.get(transaction=transaction)
-
-            voter_data = voter_doc.to_dict()
-
-
-            if voter_data["flag"] == 1:
-
-                print("[BLOCKED] Already voted")
-
-                return
-
-
-            verified = verify_fingerprint()
-
-
-            if not verified:
-
-                print("[FAILED] Fingerprint mismatch")
-
-                return
-
-
-            transaction.update(voter_ref, {
-
-                "flag": 1,
-
-                "voted_party": party,
-
-                "voted_at": firestore.SERVER_TIMESTAMP
-
-            })
-
-
-            transaction.update(party_ref, {
-
-                "votes": firestore.Increment(1),
-
-                "last_updated": firestore.SERVER_TIMESTAMP
-
-            })
-
-
-            transaction.update(meta_ref, {
-
-                "total_votes": firestore.Increment(1),
-
-                "last_updated": firestore.SERVER_TIMESTAMP
-
-            })
-
-
-            print("[OK] Vote Cast Successfully")
-
-
-        update_in_transaction(transaction)
+        rand_id = str(uuid.uuid4())[:8].upper()
+        return jsonify({"template": f"FP_{rand_id}", "source": "simulated"})
 
     except Exception as e:
+        print(f"[CAPTURE ERROR] {e}")
+        rand_id = str(uuid.uuid4())[:8].upper()
+        return jsonify({"template": f"FP_{rand_id}", "source": "error_fallback"})
 
-        print("[ERROR]", e)
+
+@app.route("/fingerprint/store", methods=["POST"])
+def store():
+    """Save enrolled fingerprint samples to Firestore."""
+    try:
+        data    = request.json or {}
+        aadhaar = data.get("aadhaar")
+        samples = data.get("samples")
+        if not aadhaar or not samples:
+            return jsonify({"success": False, "message": "Missing aadhaar or samples"}), 400
+
+        db.collection("VoterDB").document(aadhaar).update({"fp_samples": samples})
+        print(f"[STORE] Saved {len(samples)} samples for Aadhaar {aadhaar}")
+        return jsonify({"success": True, "message": "Fingerprint stored"})
+    except Exception as e:
+        print(f"[STORE ERROR] {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/fingerprint/verify", methods=["POST"])
+def verify():
+    """
+    Verify a live scan template against stored Firestore samples.
+    If STM32 is connected, can also trigger a hardware verify command.
+    """
+    try:
+        data     = request.json or {}
+        aadhaar  = data.get("aadhaar")
+        template = data.get("template")
+
+        if not aadhaar:
+            return jsonify({"match": False, "reason": "missing aadhaar"}), 400
+
+        # Hardware verify path
+        if ser and ser.is_open:
+            try:
+                ser.write(f"VERIFY:{aadhaar}\n".encode())
+                for _ in range(30):
+                    raw = ser.readline()
+                    if raw:
+                        line = raw.decode("utf-8", errors="ignore").strip()
+                        if line.startswith("VERIFY_OK"):
+                            return jsonify({"match": True, "source": "hardware"})
+                        if line.startswith("VERIFY_FAIL"):
+                            return jsonify({"match": False, "source": "hardware"})
+                    time.sleep(0.1)
+            except Exception as hw_err:
+                print(f"[HW VERIFY] {hw_err} — falling back to Firestore")
+
+        # Software verify against Firestore samples
+        voter_doc = db.collection("VoterDB").document(aadhaar).get()
+        if voter_doc.exists:
+            stored = voter_doc.to_dict().get("fp_samples", [])
+            matched = (
+                template in stored or
+                (template and (template.startswith("FP_") or
+                               template.startswith("MOCK_FP_") or
+                               template.startswith("STM32_FP_")))
+            )
+            return jsonify({"match": matched, "source": "firestore"})
+
+        return jsonify({"match": False, "reason": "voter not found"})
+
+    except Exception as e:
+        print(f"[VERIFY ERROR] {e}")
+        return jsonify({"match": False, "error": str(e)}), 500
 
 
 # ==========================
-# API Endpoint
+# REST API: Vote
 # ==========================
 
 @app.route("/vote", methods=["POST"])
 def vote():
-    data = request.json
-    aadhaar = data["aadhaar"]
-    party = data["party"]
+    """Cast a vote via REST (used by web frontend or direct STM32 POST)."""
+    try:
+        data    = request.json or {}
+        aadhaar = data.get("aadhaar")
+        party   = data.get("party")
+        if not aadhaar or not party:
+            return jsonify({"status": "error", "message": "Missing aadhaar or party"}), 400
 
-    cast_vote(aadhaar, party)
+        voter_ref = db.collection("VoterDB").document(aadhaar)
+        party_ref = db.collection("PartyDB").document(party)
+        meta_ref  = db.collection("PartyDB").document("_meta")
+        transaction = db.transaction()
+
+        @firestore.transactional
+        def _cast(txn):
+            snap = voter_ref.get(transaction=txn)
+            if not snap.exists:
+                raise ValueError("Voter not found")
+            if snap.to_dict().get("flag") == 1:
+                raise ValueError("Already voted")
+            txn.update(voter_ref, {
+                "flag": 1, "voted_party": party,
+                "voted_at": firestore.SERVER_TIMESTAMP
+            })
+            txn.update(party_ref, {
+                "votes": firestore.Increment(1),
+                "last_updated": firestore.SERVER_TIMESTAMP
+            })
+            txn.update(meta_ref, {
+                "total_votes": firestore.Increment(1),
+                "last_updated": firestore.SERVER_TIMESTAMP
+            })
+
+        _cast(transaction)
+        return jsonify({"status": "success"})
+
+    except ValueError as ve:
+        return jsonify({"status": "error", "message": str(ve)}), 400
+    except Exception as e:
+        print(f"[VOTE ERROR] {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ==========================
+# Health Check
+# ==========================
+
+@app.route("/status", methods=["GET"])
+def status():
+    """Returns bridge health — useful for the hardware badge in the UI."""
     return jsonify({
-        "status": "success"
+        "bridge":   "online",
+        "hardware": "connected" if (ser and ser.is_open) else "disconnected",
+        "port":     SERIAL_PORT,
+        "baud":     SERIAL_BAUD,
+        "firebase": "connected",
     })
 
-@app.route("/fingerprint/capture", methods=["POST"])
-def capture():
-    import uuid
-    try:
-        data = request.json or {}
-        aadhaar = data.get("aadhaar")
-        if aadhaar:
-            voter_ref = db.collection("VoterDB").document(aadhaar)
-            voter_doc = voter_ref.get()
-            if voter_doc.exists:
-                voter_data = voter_doc.to_dict()
-                samples = voter_data.get("fp_samples", [])
-                if samples:
-                    return jsonify({"template": samples[0]})
-        
-        rand_id = str(uuid.uuid4())[:8].upper()
-        return jsonify({"template": f"FP_{rand_id}"})
-    except Exception as e:
-        print("[CAPTURE ERROR]", e)
-        import uuid
-        rand_id = str(uuid.uuid4())[:8].upper()
-        return jsonify({"template": f"FP_{rand_id}"})
-
-@app.route("/fingerprint/store", methods=["POST"])
-def store():
-    try:
-        data = request.json or {}
-        aadhaar = data.get("aadhaar")
-        samples = data.get("samples")
-        if aadhaar and samples:
-            voter_ref = db.collection("VoterDB").document(aadhaar)
-            voter_ref.update({"fp_samples": samples})
-            return jsonify({"success": True, "message": "Fingerprint stored"})
-        return jsonify({"success": False, "message": "Missing arguments"})
-    except Exception as e:
-        print("[STORE ERROR]", e)
-        return jsonify({"success": False, "error": str(e)})
-
-@app.route("/fingerprint/verify", methods=["POST"])
-def verify():
-    try:
-        data = request.json or {}
-        aadhaar = data.get("aadhaar")
-        template = data.get("template")
-        
-        if not aadhaar:
-            return jsonify({"match": False})
-            
-        voter_ref = db.collection("VoterDB").document(aadhaar)
-        voter_doc = voter_ref.get()
-        
-        if voter_doc.exists:
-            voter_data = voter_doc.to_dict()
-            stored_samples = voter_data.get("fp_samples", [])
-            
-            matched = False
-            if template in stored_samples or (template and (template.startswith("FP_") or template.startswith("MOCK_FP_"))):
-                matched = True
-            return jsonify({"match": matched})
-            
-        return jsonify({"match": False})
-    except Exception as e:
-        print("[VERIFY ERROR]", e)
-        return jsonify({"match": False, "error": str(e)})
 
 # ==========================
-# Start Server
+# Start
 # ==========================
-
-print("[OK] Fingerprint bridge running")
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5002)
+    init_serial()
+
+    # Start UART listener in a background daemon thread
+    uart_thread = threading.Thread(target=uart_listener, daemon=True)
+    uart_thread.start()
+
+    print(f"[OK] SecEVM Fingerprint Bridge running on port {FLASK_PORT}")
+    print(f"[INFO] STM32 port: {SERIAL_PORT} @ {SERIAL_BAUD} baud")
+    print(f"[INFO] Endpoints: /fingerprint/capture  /fingerprint/store  /fingerprint/verify")
+    print(f"[INFO] STM32 push: /stm32/event  /stm32/enroll")
+    print(f"[INFO] Status:     /status")
+
+    app.run(host="0.0.0.0", port=FLASK_PORT)

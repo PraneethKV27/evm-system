@@ -110,7 +110,8 @@ evm-system/
 │   ├── server.js           # Node.js Express fingerprint API (port 5002)
 │   └── package.json
 ├── fingerprint_bridge/
-│   └── fp_bridge.py        # Python bridge (Flask) — connects to real hardware + Firebase
+│   └── fp_bridge.py        # Python bridge (Flask + pyserial) — STM32 UART → Firestore
+│                           # Endpoints: /fingerprint/capture|store|verify, /stm32/event|enroll, /vote, /status
 ├── functions/
 │   └── index.js            # Firebase Cloud Functions (scaffolded)
 ├── serve.js                # Simple Node.js HTTP server for the frontend (port 3000)
@@ -121,13 +122,62 @@ evm-system/
 
 ---
 
-## 🔌 API Endpoints (Fingerprint Server — port 5002)
+## 🔌 API Endpoints
+
+### Fingerprint Server — Node.js (`fingerprint-server/server.js`, port 5002)
+Used when no hardware is attached (simulated mode).
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/fingerprint/capture` | Captures a fingerprint sample (real or simulated) |
-| POST | `/fingerprint/store` | Stores enrolled fingerprint samples for an Aadhaar |
-| POST | `/fingerprint/verify` | Verifies a live scan against stored samples |
+| POST | `/fingerprint/capture` | Returns a simulated fingerprint template |
+| POST | `/fingerprint/store` | Stores enrolled samples in memory |
+| POST | `/fingerprint/verify` | Verifies a live scan against in-memory samples |
+
+---
+
+### Python Bridge — STM32 UART (`fingerprint_bridge/fp_bridge.py`, port 5002)
+Used when the STM32 fingerprint module is physically connected. Replaces the Node.js server.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/fingerprint/capture` | Triggers live scan on STM32 via UART, falls back to Firestore |
+| POST | `/fingerprint/store` | Saves enrolled samples to Firestore |
+| POST | `/fingerprint/verify` | Sends `VERIFY` command to STM32, falls back to Firestore match |
+| POST | `/vote` | Casts a vote via Firestore atomic transaction |
+| POST | `/stm32/event` | Accepts raw UART line as JSON `{ "line": "ENROLL_OK:ID=..."}` |
+| POST | `/stm32/enroll` | Direct enroll signal from STM32 `{ "voter_id": "...", "samples": 5 }` |
+| GET  | `/status` | Returns bridge health, hardware connection state, Firebase status |
+
+#### STM32 UART Message Format
+
+The bridge reads lines from the STM32 over serial and maps them to Firestore actions:
+
+| UART Message | Action |
+|---|---|
+| `ENROLL_OK:ID=<aadhaar>:SAMPLES=<n>` | Saves `fp_samples` + `fingerprint_status: enrolled` to VoterDB |
+| `VERIFY_OK:ID=<aadhaar>` | Updates `last_verify_status: matched` in VoterDB |
+| `VERIFY_FAIL:ID=<aadhaar>` | Updates `last_verify_status: mismatch` in VoterDB |
+| `VOTE_CAST:ID=<aadhaar>:PARTY=<party>` | Atomic vote transaction — updates VoterDB + PartyDB |
+| `TEMPLATE:<template_string>` | Returned by STM32 in response to a `CAPTURE:` command |
+| `ERROR:<message>` | Logged to console |
+
+#### Running the Python Bridge
+
+```bash
+cd fingerprint_bridge
+
+# Install dependencies
+pip install flask flask-cors firebase-admin pyserial
+
+# Set your COM port (or use env variable)
+set STM32_PORT=COM3       # Windows
+export STM32_PORT=/dev/ttyUSB0  # Linux/macOS
+
+# Place serviceAccountKey.json in fingerprint_bridge/
+python fp_bridge.py
+```
+
+> The bridge runs on port `5002` by default — same as the Node.js server. Run only one at a time.
 
 ---
 
