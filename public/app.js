@@ -119,18 +119,25 @@ if (!localStorage.getItem("evm_stats")) {
 async function startHardwarePolling() {
   const hwBadge = document.getElementById("hwBadge");
   if (!hwBadge) return;
-  
+
   const updateBadge = async () => {
-    const isConnected = await checkBridgeStatus();
-    if (isConnected) {
+    const { bridge, hardware } = await checkBridgeStatus();
+
+    if (!bridge) {
+      // Flask bridge itself is not running
+      hwBadge.className = "status-badge error";
+      hwBadge.innerHTML = '<span class="badge-dot"></span>Hardware: Disconnected';
+    } else if (!hardware) {
+      // Bridge is running but STM32 is not plugged in
+      hwBadge.className = "status-badge demo";
+      hwBadge.innerHTML = '<span class="badge-dot"></span>STM32: Not Connected';
+    } else {
+      // Bridge running + STM32 physically connected
       hwBadge.className = "status-badge success";
       hwBadge.innerHTML = '<span class="badge-dot"></span>Hardware: Live';
-    } else {
-      hwBadge.className = "status-badge error";
-      hwBadge.innerHTML = '<span class="badge-dot"></span>Hardware: Inactive';
     }
   };
-  
+
   await updateBadge();
   setInterval(updateBadge, 3000);
 }
@@ -286,16 +293,18 @@ let liveScanVerified = false;
 let verifiedVoterData = null;
 
 // Helper to check if the local bridge server is online
+// AND whether the STM32 hardware is actually connected
 async function checkBridgeStatus() {
   try {
-    const res = await fetch("http://127.0.0.1:5002/fingerprint/capture", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ test: true })
-    });
-    return res.ok;
+    const res = await fetch("http://127.0.0.1:5002/status", { method: "GET" });
+    if (!res.ok) return { bridge: false, hardware: false };
+    const data = await res.json();
+    return {
+      bridge:   true,
+      hardware: data.hardware === "connected"
+    };
   } catch (e) {
-    return false;
+    return { bridge: false, hardware: false };
   }
 }
 
@@ -429,7 +438,7 @@ window.startEnrollment = async function () {
   if (grid) grid.innerHTML = "";
   if (gallery) gallery.style.display = "none";
 
-  const hasBridge = await checkBridgeStatus();
+  const { bridge: hasBridge } = await checkBridgeStatus();
   showStatus("fpStatus", hasBridge ? "Bridge connected! Scanning 5 samples..." : "Simulating biometric scans (5 samples)...", "working");
 
   const totalSamples = 5;
@@ -583,7 +592,7 @@ window.startFingerprintCheck = async function () {
     return;
   }
 
-  const hasBridge = await checkBridgeStatus();
+  const { bridge: hasBridge } = await checkBridgeStatus();
   
   setTimeout(async () => {
     let matched = false;
