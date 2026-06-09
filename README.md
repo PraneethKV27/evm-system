@@ -1,102 +1,140 @@
-# 🛡️ SecEVM - Biometric EVM Secure Voting System
+# 🛡️ SecEVM — Biometric EVM Secure Voting System
 
-SecEVM is a secure, web-based Electronic Voting Machine (EVM) simulation built with biometric fingerprint verification, real-time Firebase Firestore integration, STM32 UART hardware support, and a clean dark-mode UI. It covers the full voting lifecycle — from voter registration to ballot casting — with live data dashboards.
+SecEVM is a secure, web-based Electronic Voting Machine built around an **R307 optical fingerprint sensor** connected to an **STM32 microcontroller**. It enforces biometric identity at every step — enrollment, consent, and voting — backed by Firebase Firestore and a Node.js or Python bridge server.
 
 ---
 
-## ✨ Features
+## ✨ What's New (Latest Update)
+
+| Feature | Detail |
+|---------|--------|
+| **Per-sample consent** | Before saving each of the 5 fingerprint samples the voter sees a confirmation dialog: "Sample N captured — do you consent to saving this sample?" Yes proceeds; No aborts enrollment |
+| **Multi-template fusion** | All 5 CharBuffer templates (Tz1–Tz5) are base64-encoded and uploaded from the STM32 to the backend. At verification time all 5 are loaded back and the R307 Search scans all pages in one pass — identical to how phone fingerprint sensors work |
+| **80 % match threshold** | The R307 Search response includes a 16-bit confidence score (0–65535). SecEVM only accepts a match when the score is ≥ 52428 (80 % of max). A "found but weak" scan returns `REASON=SCORE_LOW` and is rejected with a clear UI message |
+| **Enrollment completion banner** | After all 5 samples are consented and stored, a full-screen banner confirms: "✅ Fingerprint enrollment complete. 5 samples fused into a single biometric identity for XXXX-XXXX-XXXX" |
+| **Demo Mode support** | When no hardware is connected the consent dialog auto-approves after 3 seconds, allowing full offline testing |
+| **Firestore fields** | `fp_sample_count: 5`, `fingerprint_status: "enrolled"`, `enrolled_at: <timestamp>` written on successful enrollment |
+
+---
+
+## ✨ Core Features
 
 ### 📥 Registration
-- Voter registration with Aadhaar number validation (exactly 12 digits)
-- Collects name, mobile, email, gender, and date of birth
-- Auto age calculation with 18+ eligibility check
-- Two enrollment modes:
-  - **🖐️ Capture Fingerprint** — software simulation, captures 5 samples with visual gallery preview
-  - **🔌 Enroll Fingerprint (HW)** — calls Flask/Node bridge to signal STM32 hardware enrollment
-- Saves voter record to Firebase Firestore (or localStorage in demo mode)
+- Voter registration with 12-digit Aadhaar validation
+- Collects name, mobile, email, gender, date of birth; auto age calculation with 18+ check
+- **5-sample enrollment with per-sample consent** — each sample pauses and waits for the voter to tap Yes or No
+- All 5 CharBuffer templates base64-uploaded and fused into a single biometric identity
+- Saves voter record to Firebase Firestore (or `localStorage` in Demo Mode)
 
 ### 🗳️ Secure Voting
 - Aadhaar-based voter lookup with real-time pre-verification card
-- Shows voter name, age eligibility, and voting status before fingerprint scan
-- Biometric verification with live vs. registered fingerprint comparison panel
-- When STM32 bridge is running: polls `/stm32/match-status` every second for up to 10s waiting for `MATCH_OK` from hardware
-- Displays **"Fingerprint Verified — Voting Enabled"** on successful match
-- Falls back to software template verify if STM32 times out or is offline
-- Secure ballot with 5 party options + NOTA
+- Biometric verification: all 5 stored templates loaded into STM32 via `LOAD_TEMPLATE`, then a single `CMD_VERIFY` triggers `Search` across all pages
+- **80 % confidence threshold enforced in firmware** — partial, rotated, or low-pressure scans below the threshold are rejected
+- Ballot unlocked only on `MATCH_OK` (score ≥ 80 %)
 - One-vote-per-voter enforced via Firestore atomic transaction
 
 ### 📊 Stats Dashboard
 - Real-time vote counts and percentage bars for all parties
-- Total votes cast, biometric verification rate, security status
 
-### 👥 Registered Voters
-- Live table of all registered voters from Firebase (`onSnapshot` — updates instantly)
-- Columns: masked Aadhaar, name, age, gender, mobile, email, DOB, eligibility badge, vote status badge
-- Summary bar: total registered, eligible, already voted, pending
-- Search by name or Aadhaar, filter by eligible / voted / pending
-
-### ✅ Completed Votes
-- Live table of all voters who have completed their vote (`onSnapshot`)
-- Columns: masked Aadhaar, name, age, gender, party voted, timestamp
-- Summary bar: total votes, leading party, leader vote count, voter turnout %
-- Search by name or Aadhaar, filter by party
+### 👥 Registered Voters & ✅ Completed Votes
+- Live Firebase `onSnapshot` tables with search, filter, and summary stats
 
 ### 🔌 Developer Hub
-- Integration code templates for React, Next.js, Vue, Angular, WordPress, Shopify, Drupal, and more
-- AI prompt generator for Claude to scaffold full voting components
-- Configurable API URL, tech stack, integration type, and theme
+- Integration code templates for React, Next.js, Vue, Angular, WordPress, Shopify, and more
 
 ---
 
-## 🖥️ Hardware Badge (Header)
-
-The header shows two real-time status badges that update every 3 seconds:
-
-| Badge | State | Meaning |
-|-------|-------|---------|
-| 🟢 `Hardware: Live` | Green | STM32 physically connected and detected |
-| 🟡 `STM32: Not Connected` | Yellow | Bridge server running but no STM32 plugged in |
-| 🔴 `Hardware: Disconnected` | Red | Bridge server (`server.js` or `fp_bridge.py`) not running |
-| 🟢 `Firebase Live` | Cyan | Connected to Firebase Firestore |
-| 🟡 `Demo Mode` | Purple | Running on localStorage fallback |
-
-> The Node.js server auto-detects STM32 by USB Vendor ID (`0483` = STMicroelectronics) and manufacturer name — no manual COM port config needed.
-
----
-
-## 🔄 STM32 Verification Workflow
+## 🔬 Fingerprint Match Threshold
 
 ```
-Voter enters Aadhaar  →  Frontend calls /fingerprint/capture
-                      →  Bridge sends VERIFY:<aadhaar> to STM32 via UART
-                      →  STM32 scans finger, sends back:
-                              MATCH_OK ID=<aadhaar>    (match)
-                              MATCH_FAIL ID=<aadhaar>  (mismatch)
-                      →  Bridge stores result in memory + updates Firestore:
-                              { fingerprint_status: "verified" }
-                      →  Frontend polls /stm32/match-status every 1s (up to 10s)
-                      →  On verified: displays "Fingerprint Verified — Voting Enabled ✔"
-                      →  Ballot unlocked — voter selects party and casts vote
+R307 Search response byte layout (16 bytes):
+  [0..5]   header   EF 01 FF FF FF FF
+  [6]      package id
+  [7..8]   length
+  [9]      confirmation code  (0x00 = found, 0x09 = not found)
+  [10..11] matched page number (big-endian)
+  [12..13] match score / confidence (big-endian, 0x0000..0xFFFF)
+  [14..15] checksum
+
+Threshold:  52428  (= 80% × 65535)
+Decision:
+  code == 0x09                 → MATCH_FAIL  (REASON=MISMATCH)
+  code == 0x00 & score < 52428 → MATCH_FAIL  (REASON=SCORE_LOW)
+  code == 0x00 & score ≥ 52428 → MATCH_OK
+```
+
+The firmware logs the exact score on every scan:
+```
+Search: code=0x00 score=54210 (threshold=52428)
+MATCH accepted: score=54210 (82.7%)
 ```
 
 ---
 
-## 🗄️ Database Modes
+## 🔄 Enrollment Protocol (Per-Sample Consent + Template Upload)
 
-| Mode | Description |
-|------|-------------|
-| **Firebase Live** | Connects to Firebase Firestore — real-time `onSnapshot` listeners for all tabs |
-| **Demo Mode** | Falls back to browser `localStorage` — no setup needed for quick testing |
+```
+PC sends CMD_ENROLL:<aadhaar>
+  For each sample n = 1..5:
+    STM32: GenImg → Img2Tz(slot1)
+    STM32 → PC:  SAMPLE_READY:ID=<aadhaar>:SAMPLE=<n>
+    PC pauses enrollment; frontend shows consent dialog
+      Voter clicks YES  → PC sends ACK_SAMPLE:<aadhaar>:<n>
+      Voter clicks NO   → PC sends ABORT_ENROLL:<aadhaar>  → stop
+    STM32: UpChar(slot1) → base64 encode
+    STM32 → PC:  TEMPLATE_<n>:ID=<aadhaar>:DATA=<base64>
+    PC stores template in memory + Firestore
+
+  After 5 ACKs:
+    STM32: capture pair → RegModel → Store(page 1)
+    STM32 → PC:  ENROLL_OK:ID=<aadhaar>:SAMPLES=5
+    PC writes Firestore: { fp_samples:[...], fp_sample_count:5,
+                           fingerprint_status:"enrolled", enrolled_at:<ts> }
+    Frontend: shows ✅ enrollment completion banner
+```
+
+---
+
+## 🔄 Verification Protocol (Multi-Template Fusion)
+
+```
+PC: fetch all 5 templates from Firestore for <aadhaar>
+PC → STM32:  LOAD_TEMPLATE:1:<base64>
+             LOAD_TEMPLATE:2:<base64>
+             ...
+             LOAD_TEMPLATE:5:<base64>
+  (Each: STM32 decodes base64 → DnChar into slot1 → Store at page n)
+PC → STM32:  CMD_VERIFY:<aadhaar>
+  STM32: GenImg → Img2Tz(slot1) → Search(pages 0..9)
+  STM32 reads 16-byte Search response:
+    score ≥ 80% → MATCH_OK ID=<aadhaar>
+    score <  80% → MATCH_FAIL ID=<aadhaar>:REASON=SCORE_LOW
+    not found    → MATCH_FAIL ID=<aadhaar>:REASON=MISMATCH
+PC/frontend: polls /stm32/match-status → updates ballot lock
+```
+
+---
+
+## 🖥️ Hardware Badge
+
+| Badge | Meaning |
+|-------|---------|
+| 🟢 `Hardware: Live` | STM32 + bridge online |
+| 🟡 `STM32: Not Connected` | Bridge running, no STM32 plugged in |
+| 🔴 `Hardware: Disconnected` | Bridge server not running |
+| 🟢 `Firebase Live` | Firestore connected |
+| 🟡 `Demo Mode` | localStorage fallback |
 
 ---
 
 ## 🚀 Getting Started
 
 ### Prerequisites
-- [Node.js](https://nodejs.org/) installed
+- Node.js ≥ 18
 - Git
+- (Optional) Python 3.9+ for the Python bridge
 
-### 1. Clone the repository
+### 1. Clone
 
 ```bash
 git clone https://github.com/PraneethKV27/evm-system.git
@@ -111,16 +149,15 @@ npm install
 cd ..
 ```
 
-### 3. Start the fingerprint backend server
+### 3. Start the backend (Node.js)
 
 ```bash
 node fingerprint-server/server.js
 ```
 
-Runs on `http://localhost:5002`. Handles all fingerprint and STM32 endpoints.  
-STM32 is **auto-detected** by USB VID — just plug it in and the badge turns green within 3 seconds.
+Runs on `http://localhost:5002`. STM32 auto-detected by USB VID `0483` (STMicroelectronics).
 
-To pin a specific COM port:
+Pin a specific port:
 ```bash
 # Windows
 set STM32_PORT=COM3 && node fingerprint-server/server.js
@@ -129,19 +166,27 @@ set STM32_PORT=COM3 && node fingerprint-server/server.js
 STM32_PORT=/dev/ttyUSB0 node fingerprint-server/server.js
 ```
 
-### 4. Start the web server
+### 4. Start the frontend
 
 ```bash
 node serve.js
 ```
 
-Runs on `http://localhost:3000` — serves the frontend over HTTP (required for Firebase module imports and fetch calls to work).
+Runs on `http://localhost:3000`.
 
-### 5. Open the app
+> ⚠️ Open via `http://localhost:3000` — not `file://`. ES module imports and fetch calls require HTTP.
 
-Navigate to **http://localhost:3000** in your browser.
+### 5. (Optional) Python bridge with Firebase Admin
 
-> ⚠️ Do **not** open `index.html` directly via `file://` — browser security blocks fetch calls and ES module imports in that mode.
+```bash
+cd fingerprint_bridge
+pip install flask flask-cors firebase-admin pyserial
+# Place serviceAccountKey.json in fingerprint_bridge/
+set STM32_PORT=COM3   # Windows
+python fp_bridge.py
+```
+
+> Run only one backend at a time (Node.js OR Python) — both use port 5002.
 
 ---
 
@@ -150,181 +195,120 @@ Navigate to **http://localhost:3000** in your browser.
 ```
 evm-system/
 ├── public/
-│   ├── index.html              # Main UI — all 6 tabs
-│   ├── app.js                  # Firebase logic, tab controllers, live listeners,
-│   │                           # STM32 polling, hardware badge
-│   ├── style.css               # Dark-mode UI styles
-│   └── fingerprint.png         # Fingerprint icon asset
+│   ├── index.html          # Main UI — all 6 tabs
+│   ├── app.js              # Firebase logic, enrollment with per-sample consent,
+│   │                       # multi-template fusion verify, 80% threshold UI
+│   ├── style.css           # Dark-mode styles
+│   └── fingerprint.png     # Fingerprint icon
 ├── fingerprint-server/
-│   ├── server.js               # Node.js Express server (port 5002)
-│   │                           # Auto-detects STM32 via serialport USB VID
-│   │                           # Endpoints: /status, /fingerprint/*, /stm32/*
+│   ├── server.js           # Node.js Express (port 5002)
+│   │                       # Endpoints: /stm32/sample-consent, /stm32/ack-sample,
+│   │                       # /stm32/deny-sample, /stm32/store-templates,
+│   │                       # /stm32/enroll-status, /stm32/cmd-verify,
+│   │                       # /fingerprint/verify (multi-template fusion)
 │   └── package.json
 ├── fingerprint_bridge/
-│   └── fp_bridge.py            # Python bridge (Flask + pyserial) — alternative to Node.js server
-│                               # Connects directly to STM32 UART + Firebase Admin SDK
-│                               # Endpoints: /fingerprint/*, /stm32/*, /vote, /status
+│   └── fp_bridge.py        # Python bridge (Flask + pyserial + Firebase Admin)
+│                           # Same endpoints as server.js
+├── stm32/
+│   └── main.c              # STM32 firmware
+│                           # Per-sample consent: SAMPLE_READY → wait ACK/ABORT
+│                           # Template upload:    UpChar → base64 → TEMPLATE_N
+│                           # Template load:      LOAD_TEMPLATE → DnChar → Store
+│                           # 80% threshold:      Search score ≥ 52428 required
+│                           # Base64 encoder/decoder (no stdlib dependency)
 ├── functions/
-│   └── index.js                # Firebase Cloud Functions (scaffolded)
-├── serve.js                    # Simple Node.js HTTP server for the frontend (port 3000)
-├── firebase.json               # Firebase hosting + Firestore config
-├── firestore.rules             # Firestore security rules
+│   └── index.js            # Firebase Cloud Functions (scaffold)
+├── serve.js                # Static HTTP server for frontend (port 3000)
+├── firebase.json           # Firebase hosting + Firestore config
+├── firestore.rules
 └── firestore.indexes.json
 ```
 
 ---
 
-## � STM32 Firmware (`stm32/main.c`)
-
-### Hardware Connections
+## 🔌 STM32 Hardware Connections
 
 | Component | Pin | Direction |
 |-----------|-----|-----------|
 | R307 Fingerprint TX | USART1 RX (PA10) | Input |
 | R307 Fingerprint RX | USART1 TX (PA9)  | Output |
-| PC / Bridge UART TX | USART2 RX (PA3)  | Input |
-| PC / Bridge UART RX | USART2 TX (PA2)  | Output |
+| PC / Bridge TX | USART2 RX (PA3)  | Input |
+| PC / Bridge RX | USART2 TX (PA2)  | Output |
 | Green LED | PA5 | Output |
 | Red LED   | PA6 | Output |
 | Buzzer    | PB0 | Output |
-| BTN_CONFIRM (Blue button) | PC13 | Input (active-low) |
-| BTN_NEXT (digit cycle)    | PB1  | Input (active-low, pull-up) |
+| BTN_CONFIRM (Blue button) | PC13 | Input, active-low |
+| BTN_NEXT (digit cycle)    | PB1  | Input, active-low, pull-up |
 
-### Button Operation — Aadhaar Entry
+USART1 (R307): 57600 baud — USART2 (PC bridge): 115200 baud
 
-1. Press **CONFIRM** (PC13) to start enrollment mode
-2. Press **NEXT** (PB1) to cycle current digit 0→9
-3. Press **CONFIRM** to lock in each digit (12 digits total)
-4. After 12 digits, STM32 automatically starts fingerprint enrollment
+---
 
-### R307 Enrollment Flow (5 samples)
+## 📡 Full UART Command Reference
 
-```
-CONFIRM pressed → enter Aadhaar → STM32 asks PC for voter info
-→ 5× (place finger → GenImg → Img2Tz) → RegModel → Store at page 1
-→ Sends "ENROLL_OK:ID=<aadhaar>:SAMPLES=5" to PC
-```
-
-### Verification Flow
-
-```
-PC sends "CMD_VERIFY:<aadhaar>" → STM32 prompts finger scan
-→ GenImg → Img2Tz → Search all templates
-→ Sends "MATCH_OK ID=<aadhaar>" or "MATCH_FAIL ID=<aadhaar>" to PC
-```
-
-### STM32 ↔ PC Command Protocol (USART2 @ 115200)
-
-**STM32 → PC:**
+### STM32 → PC
 
 | Message | Trigger |
 |---------|---------|
-| `ENROLL_OK:ID=<aadhaar>:SAMPLES=5` | Enrollment complete |
-| `MATCH_OK ID=<aadhaar>` | Fingerprint matched |
-| `MATCH_FAIL ID=<aadhaar>` | Fingerprint mismatch |
-| `VOTER_DATA:ID=<>:NAME=<>:AGE=<>:GENDER=<>` | Voter info forwarded to PC |
-| `REQUEST_VOTER:<aadhaar>` | Asking PC to send voter info |
-| `STATUS:<message>` | Debug status messages |
+| `STATUS:STM32 Ready` | Boot |
+| `REQUEST_VOTER:<aadhaar>` | After Aadhaar entered via buttons |
+| `VOTER_DATA:ID=<>:NAME=<>:AGE=<>:GENDER=<>` | Echo back voter info to Firestore |
+| `SAMPLE_READY:ID=<aadhaar>:SAMPLE=<n>` | Sample n captured, waiting for consent |
+| `TEMPLATE_<n>:ID=<aadhaar>:DATA=<base64>` | CharBuffer upload after ACK |
+| `ENROLL_OK:ID=<aadhaar>:SAMPLES=5` | All 5 samples enrolled |
+| `MATCH_OK ID=<aadhaar>` | Score ≥ 80 % — ballot unlocked |
+| `MATCH_FAIL ID=<aadhaar>` | Not found in sensor |
+| `MATCH_FAIL ID=<aadhaar>:REASON=SCORE_LOW` | Found but score < 80 % |
 
-**PC → STM32:**
+### PC → STM32
 
 | Message | Action |
 |---------|--------|
-| `VOTER_INFO:<aadhaar>:<name>:<age>:<gender>` | Send voter info to display/confirm |
-| `ACK_VOTE:<aadhaar>:<party>` | Confirm vote was recorded in Firestore |
-| `CMD_ENROLL:<aadhaar>` | Remotely trigger enrollment |
-| `CMD_VERIFY:<aadhaar>` | Remotely trigger verification |
-
-### Flashing to STM32
-
-1. Open STM32CubeIDE and create a new project for your board (e.g. Nucleo-F411RE)
-2. Replace the generated `Core/Src/main.c` with `stm32/main.c`
-3. Adjust `SystemClock_Config()` if your MCU differs from STM32F4
-4. Build and flash via ST-Link
-5. Connect USART2 TX/RX to the PC (USB-UART adapter or built-in ST-Link VCP)
+| `VOTER_INFO:<aadhaar>:<name>:<age>:<gender>` | Voter info for display |
+| `CMD_ENROLL:<aadhaar>` | Start 5-sample enrollment |
+| `ACK_SAMPLE:<aadhaar>:<n>` | Consent granted for sample n → proceed |
+| `ABORT_ENROLL:<aadhaar>` | Voter denied — stop immediately |
+| `LOAD_TEMPLATE:<n>:<base64>` | Load template n into sensor flash page n |
+| `CMD_VERIFY:<aadhaar>` | Start live scan + Search |
+| `ACK_VOTE:<aadhaar>:<party>` | Vote confirmed — green LED + beep |
 
 ---
 
-### Node.js Fingerprint Server (`fingerprint-server/server.js`, port 5002)
+## 📋 API Endpoints
+
+### Node.js server (`fingerprint-server/server.js`, port 5002)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET  | `/status` | Hardware badge — returns `{ hardware: "connected" \| "disconnected" }` |
-| POST | `/fingerprint/capture` | Returns fingerprint template (hardware or simulated) |
-| POST | `/fingerprint/store` | Stores enrolled samples in memory |
-| POST | `/fingerprint/verify` | Verifies a scan against stored samples |
-| POST | `/stm32/enroll` | Enroll signal `{ voter_id, samples }` → stores STM32 templates |
-| POST | `/stm32/verify` | Mark match result `{ voter_id }` → sets `verified` status |
-| POST | `/stm32/event` | Push raw UART line `{ line: "MATCH_OK ID=..." }` |
-| GET  | `/stm32/match-status?aadhaar=` | Frontend polls this for MATCH_OK result |
-| GET  | `/stm32/voter-data?aadhaar=` | Get voter info received from STM32 hardware |
-| POST | `/stm32/send-voter-info` | Send `VOTER_INFO` back to STM32 `{ aadhaar, name, age, gender }` |
-| POST | `/stm32/ack-vote` | Send `ACK_VOTE` to STM32 after Firestore confirms `{ aadhaar, party }` |
-| POST | `/stm32/cmd-enroll` | Remotely trigger STM32 enrollment `{ aadhaar }` |
-| POST | `/stm32/cmd-verify` | Remotely trigger STM32 verification `{ aadhaar }` |
-
----
-
-### Python Bridge (`fingerprint_bridge/fp_bridge.py`, port 5002)
-Alternative to Node.js server — use this when you want direct Firebase Admin SDK writes from hardware events.
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET  | `/status` | Bridge health + hardware connection state |
-| POST | `/fingerprint/capture` | Triggers UART capture, falls back to Firestore |
-| POST | `/fingerprint/store` | Saves enrolled samples to Firestore |
-| POST | `/fingerprint/verify` | Sends `VERIFY:` to STM32, falls back to Firestore match |
-| POST | `/vote` | Atomic vote transaction via Firebase Admin |
-| POST | `/stm32/enroll` | Direct enroll `{ voter_id, samples }` → Firestore |
-| POST | `/stm32/verify` | MATCH_OK signal → sets `fingerprint_status: "verified"` in Firestore |
-| POST | `/stm32/event` | Raw UART line push |
-| GET  | `/stm32/match-status?aadhaar=` | Poll match result |
-
-#### Running the Python Bridge
-
-```bash
-cd fingerprint_bridge
-
-# Install dependencies
-pip install flask flask-cors firebase-admin pyserial
-
-# Place serviceAccountKey.json in fingerprint_bridge/
-# Set COM port
-set STM32_PORT=COM3        # Windows
-export STM32_PORT=/dev/ttyUSB0  # Linux/macOS
-
-python fp_bridge.py
-```
-
-> Run only one backend at a time (Node.js server OR Python bridge) — both use port 5002.
-
----
-
-## 📡 STM32 UART Message Format
-
-Both backends understand the same UART messages from STM32:
-
-| UART Message | Action |
-|---|---|
-| `MATCH_OK ID=<aadhaar>` | `fingerprint_status: "verified"` → unlocks ballot on frontend |
-| `MATCH_FAIL ID=<aadhaar>` | `last_verify_status: "mismatch"` → shows error on frontend |
-| `ENROLL_OK:ID=<aadhaar>:SAMPLES=<n>` | Saves `fp_samples` + `fingerprint_status: "enrolled"` |
-| `VERIFY_OK:ID=<aadhaar>` | Alias for `MATCH_OK` (older firmware) |
-| `VERIFY_FAIL:ID=<aadhaar>` | Alias for `MATCH_FAIL` (older firmware) |
-| `VOTE_CAST:ID=<aadhaar>:PARTY=<party>` | Atomic vote transaction (Python bridge only) |
-| `TEMPLATE:<string>` | Returned by STM32 in response to `CAPTURE:<aadhaar>` command |
-| `ERROR:<message>` | Logged to console |
+| GET  | `/status` | Hardware badge |
+| GET  | `/stm32/sample-consent?aadhaar=&sample=` | Poll consent state for sample n |
+| POST | `/stm32/ack-sample` | Voter approved sample `{ aadhaar, sample }` |
+| POST | `/stm32/deny-sample` | Voter denied — abort `{ aadhaar, sample }` |
+| GET  | `/stm32/enroll-status?aadhaar=` | Poll enrollment completion |
+| POST | `/stm32/store-templates` | Save all 5 templates `{ aadhaar, templates }` |
+| GET  | `/stm32/templates?aadhaar=` | Retrieve stored templates |
+| POST | `/stm32/cmd-enroll` | Trigger STM32 enrollment |
+| POST | `/stm32/cmd-verify` | Load templates + trigger verify |
+| GET  | `/stm32/match-status?aadhaar=` | Poll MATCH_OK / MATCH_FAIL result |
+| POST | `/fingerprint/capture` | Capture template (HW or simulated) |
+| POST | `/fingerprint/store` | Store enrolled samples |
+| POST | `/fingerprint/verify` | Multi-template fusion software verify |
+| POST | `/stm32/verify` | Mark match result |
+| POST | `/stm32/event` | Push raw UART line `{ line }` |
+| POST | `/stm32/send-voter-info` | Send VOTER_INFO to STM32 |
+| POST | `/stm32/ack-vote` | Send ACK_VOTE to STM32 |
 
 ---
 
 ## 🔒 Security
 
-- Voters cannot register if under 18
-- Voters can only cast one vote (enforced by Firestore atomic transaction)
-- Biometric fingerprint match required before ballot is unlocked
-- Aadhaar numbers are masked (`XXXX-XXXX-XXXX`) in all data display tables
-- Firebase Firestore rules control read/write access
-- Hardware verification preferred over software fallback when STM32 is connected
+- Voters under 18 cannot register
+- One vote per voter enforced via Firestore atomic transaction
+- Biometric ballot lock: ballot only unlocks on `MATCH_OK` with score ≥ 80 %
+- Per-sample consent: voter explicitly approves each of the 5 samples
+- Aadhaar masked as `XXXX-XXXX-XXXX` in all display tables
+- Path traversal protection in `serve.js`
 
 ---
 
@@ -332,13 +316,27 @@ Both backends understand the same UART messages from STM32:
 
 | Layer | Technology |
 |-------|-----------|
-| Frontend | Vanilla HTML, CSS, JavaScript (ES Modules) |
+| Frontend | Vanilla HTML/CSS/JS (ES Modules) |
 | Database | Firebase Firestore (real-time `onSnapshot`) |
-| Fingerprint Server | Node.js + Express + `serialport` (auto USB detection) |
+| Fingerprint Server | Node.js + Express + `serialport` |
 | Python Bridge | Flask + `firebase-admin` + `pyserial` |
-| Hardware | STM32 microcontroller (USB CDC / UART @ 115200 baud) |
-| Web Server | Node.js HTTP server (`serve.js`) |
-| Hosting | Firebase Hosting / local `serve.js` |
+| Hardware | STM32 + R307 optical fingerprint sensor |
+| Protocol | UART 115200 baud (PC↔STM32), 57600 baud (STM32↔R307) |
+| Web Server | Node.js HTTP (`serve.js`, port 3000) |
+
+---
+
+## 🐛 Known Issues Fixed
+
+| File | Issue | Fix |
+|------|-------|-----|
+| `main.c` | R307 Search response read from wrong UART (`huart2`) | Fixed to `huart1` |
+| `main.c` | No confidence threshold — any `0x00` confirmation accepted | 80% score gate added |
+| `server.js` | UART key=value parser split on all `=`, broke base64 values | Split only on first `=` |
+| `server.js` | Serial `data` event processed per chunk not per line | `_uartBuffer` accumulator added |
+| `app.js` | Enrollment used `setInterval` — no pause between samples | Replaced with `async for` loop + consent dialog |
+| `fp_bridge.py` | `MATCH_FAIL` reason not stored in Firestore | `last_verify_reason` field added |
+| `serve.js` | No path sanitization | `path.resolve` + boundary check added |
 
 ---
 
@@ -346,37 +344,19 @@ Both backends understand the same UART messages from STM32:
 
 | Tab | Description |
 |-----|-------------|
-| 📥 Registration | Register voters — software or STM32 hardware fingerprint enrollment |
-| 🗳️ Secure Voting | Aadhaar + fingerprint verified ballot casting with STM32 MATCH_OK flow |
-| 📊 Stats Dashboard | Real-time vote results and party charts |
-| 👥 Registered Voters | Live Firebase table of all registered voters with full details |
-| ✅ Completed Votes | Live Firebase table of voters who have cast their vote |
-| 🔌 Developer Hub | Integration code templates and AI prompt generator |
+| 📥 Registration | Register voters with 5-sample consent enrollment |
+| 🗳️ Secure Voting | Aadhaar + multi-template fingerprint verify (80 % threshold) |
+| 📊 Stats Dashboard | Real-time vote results |
+| 👥 Registered Voters | Live Firebase table |
+| ✅ Completed Votes | Live Firebase table |
+| 🔌 Developer Hub | Integration code + AI prompt generator |
 
 ---
 
-## 🐛 Known Issues Fixed
-
-| File | Issue | Fix Applied |
-|------|-------|-------------|
-| `app.js` | `orderBy` imported but never used | Removed unused import |
-| `app.js` | `registered_at` never saved during registration but shown in Registered Voters table | Now saved as `new Date().toISOString()` in voter payload |
-| `app.js` | `mobile`/`email` not included in voter payload saved to Firestore | Added to payload |
-| `app.js` | Vote transaction read `snap.data().votes` from VoterDB (wrong collection) | Fixed to read `partySnap.data().votes` from PartyDB |
-| `app.js` | `ser_write_cmd:` was an invalid JS labeled block (dead code) | Replaced with clean `try/catch` |
-| `app.js` | `dbImg` and `registrationTemplate` declared but never used | Removed |
-| `server.js` | UART key=value parser split on all `=` signs, truncating values with `=` | Fixed to split only on first `=` |
-| `server.js` | Serial `data` event processed per chunk not per line — multi-byte UART messages split | Added `_uartBuffer` to accumulate and split on `\n` |
-| `serve.js` | No path sanitization — path traversal vulnerability (`../../etc/passwd`) | Added `path.resolve` + boundary check |
-| `index.html` | Tab comments mislabelled (Stats as TAB 2, Dev Hub as TAB 3) | Corrected to TAB 3 and TAB 6 |
-| `fp_bridge.py` | Docstring listed old UART format, missing `MATCH_OK`/`MATCH_FAIL` | Updated to match current implementation |
-| `firestore.indexes.json` | JS-style `//` comments invalid in JSON | Removed all comments |
-
-
+## Demo Mode
 
 All features work without an STM32 connected:
+- Consent dialogs auto-approve after 3 seconds
+- Templates stored as `MOCK_FP_<aadhaar>_<n>_<random>` placeholders
+- Verification auto-succeeds for registered eligible voters
 - Hardware badge shows 🟡 `STM32: Not Connected`
-- Fingerprint enrollment uses simulated `FP_XXXXXXXX` templates
-- Fingerprint verification auto-succeeds for registered eligible voters
-- All Firestore reads/writes work normally
-- Switch to Demo Mode (no Firebase config needed) for fully offline testing

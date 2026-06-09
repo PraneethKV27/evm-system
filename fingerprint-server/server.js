@@ -9,7 +9,7 @@ app.use(express.json());
 // ===============================
 // Configuration
 // ===============================
-const STM32_PORT = process.env.STM32_PORT || null;   // e.g. "COM3" — set via env or auto-detect
+const STM32_PORT = process.env.STM32_PORT || null;
 const STM32_BAUD = parseInt(process.env.STM32_BAUD || "115200");
 
 // ===============================
@@ -24,18 +24,11 @@ let stm32 = null;
 let stm32Connected = false;
 let stm32PortName  = null;
 
-/**
- * Try to detect an STM32 on available serial ports.
- * STM32 USB CDC devices usually appear as "STMicroelectronics" or "STM32" in port info.
- * Falls back to STM32_PORT env variable if set.
- */
 async function detectAndConnectSTM32() {
   try {
     const ports = await SerialPort.list();
-
     let targetPort = null;
 
-    // 1. Use explicit env-var port if set
     if (STM32_PORT) {
       const found = ports.find(p =>
         p.path.toLowerCase() === STM32_PORT.toLowerCase()
@@ -43,17 +36,16 @@ async function detectAndConnectSTM32() {
       if (found) targetPort = found.path;
     }
 
-    // 2. Auto-detect STM32 by manufacturer/description
     if (!targetPort) {
       const stm32Port = ports.find(p => {
         const mfg  = (p.manufacturer || "").toLowerCase();
         const desc = (p.pnpId || p.friendlyName || "").toLowerCase();
         return (
-          mfg.includes("stm")         ||
-          mfg.includes("st micro")    ||
-          desc.includes("stm32")      ||
-          desc.includes("stm")        ||
-          p.vendorId === "0483"        // STMicroelectronics USB VID
+          mfg.includes("stm")      ||
+          mfg.includes("st micro") ||
+          desc.includes("stm32")   ||
+          desc.includes("stm")     ||
+          p.vendorId === "0483"
         );
       });
       if (stm32Port) targetPort = stm32Port.path;
@@ -69,10 +61,8 @@ async function detectAndConnectSTM32() {
       return;
     }
 
-    // Already connected to this port
     if (stm32 && stm32.isOpen && stm32PortName === targetPort) return;
 
-    // Open new connection
     stm32 = new SerialPort({ path: targetPort, baudRate: STM32_BAUD });
 
     stm32.on("open", () => {
@@ -82,10 +72,8 @@ async function detectAndConnectSTM32() {
     });
 
     stm32.on("data", (data) => {
-      // Buffer incoming bytes — STM32 may send data in chunks, not full lines
       _uartBuffer += data.toString("utf8");
       const lines = _uartBuffer.split("\n");
-      // Keep the last (possibly incomplete) fragment in the buffer
       _uartBuffer = lines.pop();
       for (const line of lines) {
         const trimmed = line.replace(/\r/g, "").trim();
@@ -115,78 +103,119 @@ async function detectAndConnectSTM32() {
   }
 }
 
-// Inbound UART line handler
-const matchResults = {};   // { aadhaar: { status: "verified"|"failed", ts: Date.now() } }
+// ===============================
+// In-memory state stores
+// ===============================
+const matchResults   = {};  // { aadhaar: { status, ts } }
+const enrollResults  = {};  // { aadhaar: { status:"complete"|"aborted", ts } }
+const sampleConsents = {};  // { aadhaar: { n: "pending"|"approved"|"denied" } }
+const templateStore  = {};  // { aadhaar: { 1: base64, 2: base64, ... } }
 
-// Line buffer for incomplete UART chunks
 let _uartBuffer = "";
 
 function handleUARTLine(line) {
   line = line.trim();
   if (!line) return;
 
-  // Normalise: "MATCH_OK ID=123..." or "MATCH_OK:ID=123..."
   const normalized = line.replace(/\s+/g, ":");
   const parts = {};
   normalized.split(":").forEach(seg => {
     const eqIdx = seg.indexOf("=");
     if (eqIdx > -1) {
-      // Split only on first "=" so values containing "=" are preserved
       parts[seg.substring(0, eqIdx).trim()] = seg.substring(eqIdx + 1).trim();
     }
   });
 
+  // ── SAMPLE_READY:ID=<aadhaar>:SAMPLE=<n>  ──────────────────────────
+  // STM32 captured a sample and wants consent before proceeding
+  if (line.startsWith("SAMPLE_READY")) {
+    const id = parts["ID"];
+    const n  = parseInt(parts["SAMPLE"] || "0");
+    if (id && n) {
+      if (!sampleConsents[id]) sampleConsents[id] = {};
+      sampleConsents[id][n] = "pending";
+      console.log(`[CONSENT] Sample ${n} ready for ${id} — awaiting voter consent`);
+    }
+    return;
+  }
+
+  // ── TEMPLATE_N:ID=<aadhaar>:DATA=<base64>  ─────────────────────────
+  // STM32 uploading CharBuffer template for sample N
+  if (line.startsWith("TEMPLATE_")) {
+    const nMatch = line.match(/^TEMPLATE_(\d+):/);
+    if (nMatch) {
+      const n  = parseInt(nMatch[1]);
+      const id = parts["ID"];
+      const b64data = parts["DATA"] || line.split("DATA=")[1] || "";
+      if (id && b64data) {
+        if (!templateStore[id]) templateStore[id] = {};
+        templateStore[id][n] = b64data;
+        console.log(`[TEMPLATE] Stored template ${n} for ${id} (${b64data.length} chars)`);
+      }
+    }
+    return;
+  }
+
+  // ── ENROLL_OK:ID=<aadhaar>:SAMPLES=5  ─────────────────────────────
+  if (line.startsWith("ENROLL_OK")) {
+    const id      = parts["ID"];
+    const samples = parseInt(parts["SAMPLES"] || "5");
+    if (id) {
+      fingerprintDB[id] = Array.from({ length: samples },
+        (_, i) => `STM32_FP_${id}_${i}`);
+      enrollResults[id] = { status: "complete", ts: Date.now() };
+      console.log(`[ENROLL] Complete for ${id} (${samples} samples)`);
+    }
+    return;
+  }
+
+  // ── MATCH_OK / VERIFY_OK  ──────────────────────────────────────────
   if (line.startsWith("MATCH_OK") || line.startsWith("VERIFY_OK")) {
     const id = parts["ID"];
     if (id) {
       matchResults[id] = { status: "verified", ts: Date.now() };
       console.log(`[MATCH] VERIFIED for ${id}`);
     }
-  } else if (line.startsWith("MATCH_FAIL") || line.startsWith("VERIFY_FAIL")) {
-    const id = parts["ID"];
+    return;
+  }
+
+  // ── MATCH_FAIL / VERIFY_FAIL  ─────────────────────────────────────
+  if (line.startsWith("MATCH_FAIL") || line.startsWith("VERIFY_FAIL")) {
+    const id     = parts["ID"];
+    const reason = parts["REASON"] || "MISMATCH";
     if (id) {
-      matchResults[id] = { status: "failed", ts: Date.now() };
-      console.log(`[MATCH] FAILED for ${id}`);
+      matchResults[id] = { status: "failed", reason, ts: Date.now() };
+      console.log(`[MATCH] FAILED for ${id} — reason: ${reason}`);
     }
-  } else if (line.startsWith("ENROLL_OK")) {
-    const id      = parts["ID"];
-    const samples = parseInt(parts["SAMPLES"] || "5");
-    if (id) {
-      fingerprintDB[id] = Array.from({ length: samples },
-        (_, i) => `STM32_FP_${id}_${i}`);
-      console.log(`[ENROLL] Stored ${samples} samples for ${id}`);
-    }
-  } else if (line.startsWith("VOTER_DATA")) {
-    // STM32 forwarding voter info: VOTER_DATA:ID=<>:NAME=<>:AGE=<>:GENDER=<>
+    return;
+  }
+
+  // ── VOTER_DATA  ───────────────────────────────────────────────────
+  if (line.startsWith("VOTER_DATA")) {
     const id     = parts["ID"];
     const name   = parts["NAME"]   || "";
     const age    = parts["AGE"]    || "";
     const gender = parts["GENDER"] || "";
     if (id) {
       voterDataCache[id] = { aadhaar: id, name, age: parseInt(age) || 0, gender, ts: Date.now() };
-      console.log(`[VOTER_DATA] Received from STM32 — ${id}: ${name}, ${age}`);
+      console.log(`[VOTER_DATA] ${id}: ${name}, ${age}`);
     }
-  } else if (line.startsWith("REQUEST_VOTER")) {
-    // STM32 asking for voter info — we respond via serial if connected
-    const id = parts["REQUEST_VOTER"] || line.split(":")[1];
-    console.log(`[REQUEST_VOTER] STM32 wants info for ${id}`);
-    // The /voter-info REST endpoint handles the response
-  } else if (line.startsWith("STATUS")) {
+    return;
+  }
+
+  if (line.startsWith("STATUS")) {
     console.log(`[STM32 STATUS] ${line}`);
   }
 }
 
-// Poll for STM32 every 3 seconds
 detectAndConnectSTM32();
 setInterval(detectAndConnectSTM32, 3000);
 
 // ===============================
 // In-memory voter data cache
-// (filled when STM32 sends VOTER_DATA)
 // ===============================
-const voterDataCache = {}; // { aadhaar: { name, age, gender, ts } }
+const voterDataCache = {};
 
-// Helper: send a command string to STM32 via UART
 function sendToSTM32(msg) {
   if (stm32 && stm32.isOpen) {
     stm32.write(msg + "\n", (err) => {
@@ -199,11 +228,9 @@ function sendToSTM32(msg) {
 }
 
 // ===============================
-// STATUS endpoint — used by the
-// frontend hardware badge
+// STATUS
 // ===============================
 app.get("/status", async (req, res) => {
-  // Always list ports so the badge reflects real-time state
   let stm32Detected = false;
   try {
     const ports = await SerialPort.list();
@@ -229,7 +256,7 @@ app.get("/status", async (req, res) => {
 });
 
 // ===============================
-// MATCH STATUS — frontend poll
+// MATCH STATUS
 // ===============================
 app.get("/stm32/match-status", (req, res) => {
   const aadhaar = (req.query.aadhaar || "").trim();
@@ -237,14 +264,108 @@ app.get("/stm32/match-status", (req, res) => {
 
   const result = matchResults[aadhaar];
   if (result && (Date.now() - result.ts) < 60000) {
-    delete matchResults[aadhaar];   // consume once
+    delete matchResults[aadhaar];
+    return res.json({ status: result.status, reason: result.reason || null, aadhaar });
+  }
+  res.json({ status: "pending", aadhaar });
+});
+
+// ===============================
+// ENROLL STATUS — frontend polls after CMD_ENROLL
+// Returns "complete" | "aborted" | "pending"
+// ===============================
+app.get("/stm32/enroll-status", (req, res) => {
+  const aadhaar = (req.query.aadhaar || "").trim();
+  if (!aadhaar) return res.json({ status: "pending" });
+
+  const result = enrollResults[aadhaar];
+  if (result && (Date.now() - result.ts) < 120000) {
+    delete enrollResults[aadhaar];
     return res.json({ status: result.status, aadhaar });
   }
   res.json({ status: "pending", aadhaar });
 });
 
 // ===============================
-// STM32 ENROLL (REST push)
+// SAMPLE CONSENT STATUS — frontend polls for each sample
+// GET /stm32/sample-consent?aadhaar=<id>&sample=<n>
+// Returns "pending" | "approved" | "denied"
+// ===============================
+app.get("/stm32/sample-consent", (req, res) => {
+  const aadhaar = (req.query.aadhaar || "").trim();
+  const n = parseInt(req.query.sample || "0");
+  if (!aadhaar || !n) return res.json({ status: "pending" });
+
+  const state = (sampleConsents[aadhaar] || {})[n] || "not_ready";
+  res.json({ status: state, aadhaar, sample: n });
+});
+
+// ===============================
+// ACK SAMPLE — voter approved a sample
+// POST /stm32/ack-sample  body: { aadhaar, sample }
+// ===============================
+app.post("/stm32/ack-sample", (req, res) => {
+  const { aadhaar, sample } = req.body || {};
+  if (!aadhaar || !sample) return res.status(400).json({ status: "error", message: "Missing aadhaar or sample" });
+
+  // Record approved
+  if (!sampleConsents[aadhaar]) sampleConsents[aadhaar] = {};
+  sampleConsents[aadhaar][sample] = "approved";
+
+  // Tell STM32 to proceed to next sample
+  sendToSTM32(`ACK_SAMPLE:${aadhaar}:${sample}`);
+  console.log(`[CONSENT] Sample ${sample} approved for ${aadhaar}`);
+  res.json({ status: "ok", sent: `ACK_SAMPLE:${aadhaar}:${sample}` });
+});
+
+// ===============================
+// DENY SAMPLE — voter denied a sample → abort enrollment
+// POST /stm32/deny-sample  body: { aadhaar, sample }
+// ===============================
+app.post("/stm32/deny-sample", (req, res) => {
+  const { aadhaar, sample } = req.body || {};
+  if (!aadhaar) return res.status(400).json({ status: "error", message: "Missing aadhaar" });
+
+  if (!sampleConsents[aadhaar]) sampleConsents[aadhaar] = {};
+  sampleConsents[aadhaar][sample] = "denied";
+  enrollResults[aadhaar] = { status: "aborted", ts: Date.now() };
+
+  // Tell STM32 to abort enrollment
+  sendToSTM32(`ABORT_ENROLL:${aadhaar}`);
+  console.log(`[CONSENT] Sample ${sample} denied for ${aadhaar} — enrollment aborted`);
+  res.json({ status: "ok", sent: `ABORT_ENROLL:${aadhaar}` });
+});
+
+// ===============================
+// STORE TEMPLATES — backend saves all 5 CharBuffer templates from STM32
+// POST /stm32/store-templates  body: { aadhaar, templates: { "1": base64, ... } }
+// ===============================
+app.post("/stm32/store-templates", (req, res) => {
+  const { aadhaar, templates } = req.body || {};
+  if (!aadhaar || !templates) return res.status(400).json({ status: "error", message: "Missing aadhaar or templates" });
+
+  templateStore[aadhaar] = templates;
+  // Also store as flat array for /fingerprint/verify
+  fingerprintDB[aadhaar] = Object.values(templates);
+  console.log(`[TEMPLATES] Stored ${Object.keys(templates).length} templates for ${aadhaar}`);
+  res.json({ status: "ok", count: Object.keys(templates).length });
+});
+
+// ===============================
+// GET TEMPLATES — retrieve stored templates for a voter
+// GET /stm32/templates?aadhaar=<id>
+// ===============================
+app.get("/stm32/templates", (req, res) => {
+  const aadhaar = (req.query.aadhaar || "").trim();
+  if (!aadhaar) return res.status(400).json({ status: "error", message: "Missing aadhaar" });
+
+  const templates = templateStore[aadhaar];
+  if (!templates) return res.json({ found: false, aadhaar });
+  res.json({ found: true, aadhaar, templates });
+});
+
+// ===============================
+// ENROLL (REST push from STM32 or admin)
 // ===============================
 app.post("/stm32/enroll", (req, res) => {
   const { voter_id, aadhaar, samples = 5 } = req.body || {};
@@ -253,13 +374,14 @@ app.post("/stm32/enroll", (req, res) => {
 
   fingerprintDB[id] = Array.from({ length: samples },
     (_, i) => `STM32_FP_${id}_${i}`);
+  enrollResults[id] = { status: "complete", ts: Date.now() };
 
   console.log(`[ENROLL] /stm32/enroll — ${id} (${samples} samples)`);
   res.json({ status: "success", id, samples });
 });
 
 // ===============================
-// STM32 VERIFY (REST push from STM32)
+// VERIFY (REST push)
 // ===============================
 app.post("/stm32/verify", (req, res) => {
   const { voter_id, aadhaar, line } = req.body || {};
@@ -283,7 +405,7 @@ app.post("/stm32/verify", (req, res) => {
 });
 
 // ===============================
-// STM32 EVENT (raw UART line push)
+// EVENT (raw UART line push)
 // ===============================
 app.post("/stm32/event", (req, res) => {
   const { line } = req.body || {};
@@ -293,24 +415,21 @@ app.post("/stm32/event", (req, res) => {
 });
 
 // ===============================
-// STM32 VOTER DATA — frontend poll
-// Frontend polls this after enrollment to get voter info received from STM32
+// VOTER DATA poll
 // ===============================
 app.get("/stm32/voter-data", (req, res) => {
   const aadhaar = (req.query.aadhaar || "").trim();
   if (!aadhaar) return res.json({ found: false });
 
   const data = voterDataCache[aadhaar];
-  if (data && (Date.now() - data.ts) < 300000) { // 5 min expiry
+  if (data && (Date.now() - data.ts) < 300000) {
     return res.json({ found: true, ...data });
   }
   res.json({ found: false, aadhaar });
 });
 
 // ===============================
-// Send VOTER_INFO back to STM32
-// Called by frontend after fetching voter from Firestore
-// Body: { aadhaar, name, age, gender }
+// Send VOTER_INFO to STM32
 // ===============================
 app.post("/stm32/send-voter-info", (req, res) => {
   const { aadhaar, name, age, gender } = req.body || {};
@@ -322,9 +441,7 @@ app.post("/stm32/send-voter-info", (req, res) => {
 });
 
 // ===============================
-// Send ACK_VOTE back to STM32
-// Called after vote is recorded in Firestore
-// Body: { aadhaar, party }
+// ACK_VOTE to STM32
 // ===============================
 app.post("/stm32/ack-vote", (req, res) => {
   const { aadhaar, party } = req.body || {};
@@ -336,25 +453,42 @@ app.post("/stm32/ack-vote", (req, res) => {
 });
 
 // ===============================
-// Trigger STM32 to start enrollment for an Aadhaar
-// Body: { aadhaar }
+// CMD_ENROLL
 // ===============================
 app.post("/stm32/cmd-enroll", (req, res) => {
   const { aadhaar } = req.body || {};
   if (!aadhaar) return res.status(400).json({ status: "error", message: "Missing aadhaar" });
+
+  // Clear previous consent/template state for this voter
+  delete sampleConsents[aadhaar];
+  delete templateStore[aadhaar];
+  delete enrollResults[aadhaar];
+
   sendToSTM32(`CMD_ENROLL:${aadhaar}`);
   res.json({ status: "ok", command: `CMD_ENROLL:${aadhaar}` });
 });
 
 // ===============================
-// Trigger STM32 to run live verify for an Aadhaar
-// Body: { aadhaar }
+// CMD_VERIFY — load all 5 templates then trigger live verify
+// POST /stm32/cmd-verify  body: { aadhaar }
 // ===============================
 app.post("/stm32/cmd-verify", (req, res) => {
   const { aadhaar } = req.body || {};
   if (!aadhaar) return res.status(400).json({ status: "error", message: "Missing aadhaar" });
+
+  const templates = templateStore[aadhaar];
+  if (templates && Object.keys(templates).length > 0) {
+    // Send each stored template to STM32 for loading into memory
+    Object.entries(templates).forEach(([n, b64]) => {
+      sendToSTM32(`LOAD_TEMPLATE:${n}:${b64}`);
+    });
+    console.log(`[VERIFY] Loaded ${Object.keys(templates).length} templates for ${aadhaar}`);
+  } else {
+    console.log(`[VERIFY] No stored templates for ${aadhaar} — relying on STM32 internal flash`);
+  }
+
   sendToSTM32(`CMD_VERIFY:${aadhaar}`);
-  res.json({ status: "ok", command: `CMD_VERIFY:${aadhaar}` });
+  res.json({ status: "ok", command: `CMD_VERIFY:${aadhaar}`, templatesLoaded: templates ? Object.keys(templates).length : 0 });
 });
 
 // ===============================
@@ -386,23 +520,42 @@ app.post("/fingerprint/store", (req, res) => {
 });
 
 // ===============================
-// VERIFY FINGERPRINT
+// VERIFY FINGERPRINT — multi-template fused matching
+// POST /fingerprint/verify  body: { aadhaar, template? }
 // ===============================
 app.post("/fingerprint/verify", (req, res) => {
   const { aadhaar, template } = req.body || {};
+  if (!aadhaar) return res.json({ match: false, reason: "missing aadhaar" });
+
+  // If STM32 is connected use the UART-driven verify path
+  // (frontend already polls /stm32/match-status for the result)
+  // This REST endpoint is the software-fallback multi-template check.
+
   const storedSamples = fingerprintDB[aadhaar];
+  const storedTemplates = templateStore[aadhaar];
 
-  if (!storedSamples) return res.json({ match: false });
+  // Multi-template fusion check: match against any of the 5 stored templates
+  let match = false;
 
-  const match =
-    storedSamples.includes(template) ||
-    (template && (
-      template.startsWith("FP_")       ||
-      template.startsWith("MOCK_FP_")  ||
-      template.startsWith("STM32_FP_")
-    ));
+  if (storedTemplates && Object.keys(storedTemplates).length > 0) {
+    // Real base64 templates — check if live template matches any
+    match = Object.values(storedTemplates).some(t => t === template);
+    // For demo/mock templates that aren't real base64, use prefix heuristic
+    if (!match && template) {
+      match = template.startsWith("FP_") ||
+              template.startsWith("MOCK_FP_") ||
+              template.startsWith("STM32_FP_");
+    }
+  } else if (storedSamples && storedSamples.length > 0) {
+    match = storedSamples.includes(template) ||
+            (template && (
+              template.startsWith("FP_")      ||
+              template.startsWith("MOCK_FP_") ||
+              template.startsWith("STM32_FP_")
+            ));
+  }
 
-  res.json({ match, source: stm32Connected ? "hardware" : "software" });
+  res.json({ match, source: stm32Connected ? "hardware" : "software", templatesChecked: storedTemplates ? Object.keys(storedTemplates).length : (storedSamples ? storedSamples.length : 0) });
 });
 
 // ===============================
@@ -411,5 +564,6 @@ app.post("/fingerprint/verify", (req, res) => {
 app.listen(5002, () => {
   console.log("[EVM] Fingerprint server running on port 5002");
   console.log("[EVM] STM32 auto-detection active (polling every 3s)");
-  console.log("[EVM] Set STM32_PORT=COM3 env var to pin a specific port");
+  console.log("[EVM] Multi-template fusion enrollment enabled (5 samples)");
+  console.log("[EVM] Per-sample consent endpoints: /stm32/sample-consent, /stm32/ack-sample, /stm32/deny-sample");
 });

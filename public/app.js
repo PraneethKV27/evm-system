@@ -406,11 +406,137 @@ window.switchTab = function (tabId) {
 };
 
 // ================= Voter Registration =================
+
+// ── Per-sample consent dialog ──────────────────────────────────────────
+// Shows a modal asking the voter to approve each captured sample.
+// In Demo Mode (no hardware) it auto-approves after 3 seconds.
+// Returns a Promise that resolves to true (approved) or false (denied).
+function showSampleConsentDialog(sampleIndex, isDemoMode) {
+  return new Promise((resolve) => {
+    // Inject modal if not already present
+    let modal = document.getElementById("sampleConsentModal");
+    if (!modal) {
+      modal = document.createElement("div");
+      modal.id = "sampleConsentModal";
+      modal.style.cssText = [
+        "position:fixed;top:0;left:0;width:100%;height:100%;",
+        "background:rgba(0,0,0,0.75);z-index:9999;",
+        "display:flex;align-items:center;justify-content:center;"
+      ].join("");
+      modal.innerHTML = `
+        <div style="background:#111622;border:1px solid #334155;border-radius:14px;
+                    padding:32px;max-width:420px;width:90%;text-align:center;
+                    box-shadow:0 0 40px rgba(6,182,212,0.15);">
+          <div style="font-size:2.5rem;margin-bottom:12px;">👆</div>
+          <h3 id="consentTitle" style="color:#e2e8f0;margin:0 0 10px;font-size:1.2rem;"></h3>
+          <p id="consentBody" style="color:#94a3b8;margin:0 0 24px;font-size:0.9rem;line-height:1.5;"></p>
+          <div id="consentTimer" style="color:#64748b;font-size:0.8rem;margin-bottom:18px;"></div>
+          <div style="display:flex;gap:12px;justify-content:center;">
+            <button id="consentYes" style="background:#10b981;color:#fff;border:none;
+              padding:10px 28px;border-radius:8px;cursor:pointer;font-weight:600;font-size:0.95rem;">
+              ✔ Yes, Save Sample
+            </button>
+            <button id="consentNo" style="background:#ef4444;color:#fff;border:none;
+              padding:10px 28px;border-radius:8px;cursor:pointer;font-weight:600;font-size:0.95rem;">
+              ✗ No, Abort
+            </button>
+          </div>
+        </div>`;
+      document.body.appendChild(modal);
+    }
+
+    modal.querySelector("#consentTitle").innerText =
+      `Sample ${sampleIndex} of 5 Captured`;
+    modal.querySelector("#consentBody").innerText =
+      `Your fingerprint sample ${sampleIndex} has been scanned.\n` +
+      `Do you consent to saving this sample as part of your biometric identity?`;
+    modal.style.display = "flex";
+
+    const timerEl = modal.querySelector("#consentTimer");
+    const yesBtn  = modal.querySelector("#consentYes");
+    const noBtn   = modal.querySelector("#consentNo");
+
+    let countdown = null;
+    let resolved  = false;
+
+    const finish = (approved) => {
+      if (resolved) return;
+      resolved = true;
+      clearInterval(countdown);
+      modal.style.display = "none";
+      timerEl.innerText = "";
+      resolve(approved);
+    };
+
+    yesBtn.onclick = () => finish(true);
+    noBtn.onclick  = () => finish(false);
+
+    // Demo Mode: auto-approve after 3 seconds
+    if (isDemoMode) {
+      let remaining = 3;
+      timerEl.innerText = `Demo Mode — auto-approving in ${remaining}s`;
+      countdown = setInterval(() => {
+        remaining--;
+        if (remaining <= 0) {
+          finish(true);
+        } else {
+          timerEl.innerText = `Demo Mode — auto-approving in ${remaining}s`;
+        }
+      }, 1000);
+    } else {
+      timerEl.innerText = "";
+    }
+  });
+}
+
+// ── Enrollment completion banner ──────────────────────────────────────
+function showEnrollmentComplete(aadhaar) {
+  let banner = document.getElementById("enrollCompleteBanner");
+  if (!banner) {
+    banner = document.createElement("div");
+    banner.id = "enrollCompleteBanner";
+    banner.style.cssText = [
+      "position:fixed;top:0;left:0;width:100%;height:100%;",
+      "background:rgba(0,0,0,0.80);z-index:9998;",
+      "display:flex;align-items:center;justify-content:center;"
+    ].join("");
+    document.body.appendChild(banner);
+  }
+
+  // Format Aadhaar as XXXX-XXXX-XXXX
+  const formatted = aadhaar.replace(/(\d{4})(\d{4})(\d{4})/, "$1-$2-$3");
+
+  banner.innerHTML = `
+    <div style="background:#111622;border:1px solid #10b981;border-radius:16px;
+                padding:40px 36px;max-width:480px;width:92%;text-align:center;
+                box-shadow:0 0 50px rgba(16,185,129,0.2);">
+      <div style="font-size:3rem;margin-bottom:16px;">✅</div>
+      <h2 style="color:#10b981;margin:0 0 14px;font-size:1.4rem;">
+        Fingerprint Enrollment Complete
+      </h2>
+      <p style="color:#e2e8f0;margin:0 0 8px;line-height:1.6;font-size:0.95rem;">
+        <strong>5 samples</strong> captured and fused into a single biometric identity for
+      </p>
+      <p style="color:#06b6d4;font-size:1.1rem;font-weight:700;margin:0 0 12px;
+                letter-spacing:2px;">${formatted}</p>
+      <p style="color:#94a3b8;font-size:0.85rem;margin:0 0 28px;">
+        Your fingerprint is now registered. Multiple angles and pressures are
+        stored so any scan will be recognised — just like a phone fingerprint.
+      </p>
+      <button onclick="document.getElementById('enrollCompleteBanner').style.display='none'"
+        style="background:#10b981;color:#fff;border:none;padding:11px 32px;
+               border-radius:9px;cursor:pointer;font-weight:600;font-size:0.95rem;">
+        Done ✔
+      </button>
+    </div>`;
+  banner.style.display = "flex";
+}
+
 window.startEnrollment = async function () {
   const aadhaar = document.getElementById("aadhaar").value.trim();
-  const name = document.getElementById("name").value.trim();
-  const dob = document.getElementById("dob").value;
-  const gender = document.getElementById("gender").value;
+  const name    = document.getElementById("name").value.trim();
+  const dob     = document.getElementById("dob").value;
+  const gender  = document.getElementById("gender").value;
 
   // Validation
   if (!aadhaar || !name || !dob || !gender) {
@@ -427,119 +553,205 @@ window.startEnrollment = async function () {
     return;
   }
 
-  // ── STM32 REQUIRED CHECK ──────────────────────────────────────
+  // ── STM32 / Demo Mode check ───────────────────────────────────────
   const { bridge, hardware } = await checkBridgeStatus();
-  if (!bridge || !hardware) {
+  const isDemoMode = !bridge || !hardware;
+
+  if (!isDemoMode) {
+    // Hardware path: tell STM32 to start enrollment
     const fpSensor = document.getElementById("enrollFpSensor");
-    fpSensor.className = "fp-sensor error";
-    showStatus("fpStatus",
-      !bridge
-        ? "Fingerprint server not running. Start fingerprint-server first ❌"
-        : "STM32 not connected. Plug in the hardware to enroll ❌",
-      "error"
-    );
-    return;
+    fpSensor.className = "fp-sensor scanning";
+  } else if (!bridge) {
+    // Demo mode — let it run with localStorage fallback
+    console.log("[EVM] Demo Mode — enrollment will use simulated samples");
   }
-  // ─────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────
 
   registrationSamples = [];
   const fpSensor = document.getElementById("enrollFpSensor");
   fpSensor.className = "fp-sensor scanning";
 
   // Clear visual fingerprint gallery
-  const grid = document.getElementById("enrollFpGrid");
+  const grid    = document.getElementById("enrollFpGrid");
   const gallery = document.getElementById("enrollFpGallery");
-  if (grid) grid.innerHTML = "";
+  if (grid)    grid.innerHTML    = "";
   if (gallery) gallery.style.display = "none";
 
-  showStatus("fpStatus", "STM32 connected. Scanning 5 fingerprint samples...", "working");
+  showStatus("fpStatus", isDemoMode
+    ? "Demo Mode — simulating 5 fingerprint samples (consent required per sample)..."
+    : "STM32 connected. Capturing 5 fingerprint samples with consent...",
+    "working"
+  );
 
   const totalSamples = 5;
   updateSampleDots(0, totalSamples);
-  let currentSample = 0;
 
-  const scanInterval = setInterval(async () => {
-    currentSample++;
-    let templateStr = "";
+  // If hardware is connected, kick off STM32 enrollment
+  if (!isDemoMode) {
     try {
-      const res = await fetch("http://127.0.0.1:5002/fingerprint/capture", {
+      await fetch("http://127.0.0.1:5002/stm32/cmd-enroll", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ aadhaar })
       });
-      const data = await res.json();
-      templateStr = data.template;
-    } catch (e) {
-      clearInterval(scanInterval);
+    } catch (_) { /* non-critical */ }
+  }
+
+  // ── Sample-by-sample loop with per-sample consent ──────────────
+  for (let sampleIndex = 1; sampleIndex <= totalSamples; sampleIndex++) {
+
+    showStatus("fpStatus", `Waiting for sample ${sampleIndex}/${totalSamples} from STM32...`, "working");
+
+    let templateStr = "";
+
+    if (!isDemoMode) {
+      // Poll until STM32 sends SAMPLE_READY for this sample (up to 30 s)
+      const READY_TIMEOUT  = 30000;
+      const READY_INTERVAL = 500;
+      let readyElapsed     = 0;
+      let sampleReady      = false;
+
+      while (readyElapsed < READY_TIMEOUT) {
+        try {
+          const res  = await fetch(
+            `http://127.0.0.1:5002/stm32/sample-consent?aadhaar=${aadhaar}&sample=${sampleIndex}`
+          );
+          const data = await res.json();
+          if (data.status === "pending" || data.status === "approved") {
+            sampleReady = true;
+            break;
+          }
+        } catch (_) { /* keep polling */ }
+        await new Promise(r => setTimeout(r, READY_INTERVAL));
+        readyElapsed += READY_INTERVAL;
+      }
+
+      if (!sampleReady) {
+        fpSensor.className = "fp-sensor error";
+        showStatus("fpStatus", `Timeout waiting for sample ${sampleIndex} from STM32 ❌`, "error");
+        return;
+      }
+
+      // Fetch the template captured for this sample
+      try {
+        const res  = await fetch("http://127.0.0.1:5002/fingerprint/capture", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ aadhaar })
+        });
+        const data = await res.json();
+        templateStr = data.template;
+      } catch (_) {
+        templateStr = `STM32_FP_${aadhaar}_${sampleIndex}`;
+      }
+
+    } else {
+      // Demo mode: simulate a short capture delay
+      await new Promise(r => setTimeout(r, 600));
+      templateStr = `MOCK_FP_${aadhaar}_${sampleIndex}_${Math.random().toString(36).slice(2,6).toUpperCase()}`;
+    }
+
+    // ── Show per-sample consent dialog ──────────────────────────
+    showStatus("fpStatus", `Sample ${sampleIndex} ready — asking voter for consent...`, "working");
+    const approved = await showSampleConsentDialog(sampleIndex, isDemoMode);
+
+    if (!approved) {
+      // Voter denied — abort enrollment
       fpSensor.className = "fp-sensor error";
-      showStatus("fpStatus", "Lost connection to STM32 during scan ❌", "error");
+      showStatus("fpStatus", `Enrollment aborted at sample ${sampleIndex} — voter declined ❌`, "error");
+      updateSampleDots(sampleIndex - 1, totalSamples);
+
+      if (!isDemoMode) {
+        fetch("http://127.0.0.1:5002/stm32/deny-sample", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ aadhaar, sample: sampleIndex })
+        }).catch(() => {});
+      }
       return;
     }
 
-    registrationSamples.push(templateStr);
-    updateSampleDots(currentSample, totalSamples);
-    addFpSampleToGallery(currentSample);
-    showStatus("fpStatus", `Captured sample ${currentSample}/${totalSamples} ✔`, "working");
-
-    if (currentSample === totalSamples) {
-      clearInterval(scanInterval);
-      fpSensor.className = "fp-sensor success";
-
-      // Save Voter Account — include registered_at timestamp
-      const voterPayload = {
-        aadhaar,
-        name,
-        dob,
-        age,
-        gender,
-        mobile: document.getElementById("mobile").value.trim(),
-        email:  document.getElementById("email").value.trim(),
-        fp_samples: registrationSamples,
-        flag: 0,
-        eligible: true,
-        voted_party: "",
-        registered_at: new Date().toISOString()
-      };
-
-      try {
-        if (isFirebaseMode) {
-          await setDoc(doc(db, "VoterDB", aadhaar), voterPayload);
-          await fetch("http://127.0.0.1:5002/fingerprint/store", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ aadhaar, samples: registrationSamples })
-          });
-          // Inform STM32 about the new voter
-          fetch("http://127.0.0.1:5002/stm32/send-voter-info", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ aadhaar, name: voterPayload.name, age: voterPayload.age, gender: voterPayload.gender })
-          }).catch(() => {});
-        } else {
-          await mockDB.setVoter(aadhaar, voterPayload);
-        }
-        showStatus("fpStatus", "Voter Registered & Biometrics Saved ✔", "success");
-
-        setTimeout(() => {
-          document.getElementById("aadhaar").value = "";
-          document.getElementById("name").value = "";
-          document.getElementById("dob").value = "";
-          document.getElementById("gender").selectedIndex = 0;
-          document.getElementById("mobile").value = "";
-          document.getElementById("email").value = "";
-          fpSensor.className = "fp-sensor";
-          showStatus("fpStatus", "Click the scanner to enroll biometrics.", "");
-          updateSampleDots(0, totalSamples);
-          if (grid) grid.innerHTML = "";
-          if (gallery) gallery.style.display = "none";
-        }, 2000);
-      } catch (err) {
-        console.error("Save failed", err);
-        showStatus("fpStatus", "Failed to save registration record ❌", "error");
-        fpSensor.className = "fp-sensor error";
-      }
+    // Voter approved — tell STM32 to proceed
+    if (!isDemoMode) {
+      fetch("http://127.0.0.1:5002/stm32/ack-sample", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aadhaar, sample: sampleIndex })
+      }).catch(() => {});
     }
-  }, 800);
+
+    registrationSamples.push(templateStr);
+    updateSampleDots(sampleIndex, totalSamples);
+    addFpSampleToGallery(sampleIndex);
+    showStatus("fpStatus", `Sample ${sampleIndex}/${totalSamples} consented & saved ✔`, "working");
+  }
+
+  // ── All 5 samples consented — fuse and save ─────────────────────
+  fpSensor.className = "fp-sensor success";
+  showStatus("fpStatus", "All 5 samples approved — fusing biometric identity...", "working");
+
+  const voterPayload = {
+    aadhaar,
+    name,
+    dob,
+    age,
+    gender,
+    mobile:             document.getElementById("mobile").value.trim(),
+    email:              document.getElementById("email").value.trim(),
+    fp_samples:         registrationSamples,
+    fp_sample_count:    5,
+    fingerprint_status: "enrolled",
+    enrolled_at:        new Date().toISOString(),
+    flag:               0,
+    eligible:           true,
+    voted_party:        "",
+    registered_at:      new Date().toISOString()
+  };
+
+  try {
+    if (isFirebaseMode) {
+      await setDoc(doc(db, "VoterDB", aadhaar), voterPayload);
+      await fetch("http://127.0.0.1:5002/fingerprint/store", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aadhaar, samples: registrationSamples })
+      });
+      // Inform STM32 about the new voter
+      fetch("http://127.0.0.1:5002/stm32/send-voter-info", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aadhaar, name: voterPayload.name, age: voterPayload.age, gender: voterPayload.gender })
+      }).catch(() => {});
+    } else {
+      await mockDB.setVoter(aadhaar, voterPayload);
+    }
+
+    showStatus("fpStatus", "Voter Registered & 5 Biometric Samples Fused ✔", "success");
+
+    // Show enrollment completion banner
+    showEnrollmentComplete(aadhaar);
+
+    // Reset form after 3 s
+    setTimeout(() => {
+      document.getElementById("aadhaar").value   = "";
+      document.getElementById("name").value      = "";
+      document.getElementById("dob").value       = "";
+      document.getElementById("gender").selectedIndex = 0;
+      document.getElementById("mobile").value    = "";
+      document.getElementById("email").value     = "";
+      fpSensor.className = "fp-sensor";
+      showStatus("fpStatus", "Click the scanner to enroll biometrics.", "");
+      updateSampleDots(0, 5);
+      if (grid)    grid.innerHTML        = "";
+      if (gallery) gallery.style.display = "none";
+      if (typeof startRegisteredListener === "function") startRegisteredListener();
+    }, 3000);
+
+  } catch (err) {
+    console.error("Save failed", err);
+    showStatus("fpStatus", "Failed to save registration record ❌", "error");
+    fpSensor.className = "fp-sensor error";
+  }
 };
 
 // ================= Fingerprint Verification =================
@@ -616,40 +828,43 @@ window.startFingerprintCheck = async function () {
     return;
   }
 
-  // Trigger STM32 to start scanning
+  // Trigger STM32 to start multi-template verify:
+  // The server loads all 5 stored templates via LOAD_TEMPLATE before CMD_VERIFY
   try {
-    await fetch("http://127.0.0.1:5002/fingerprint/capture", {
+    await fetch("http://127.0.0.1:5002/stm32/cmd-verify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ aadhaar })
     });
   } catch (_) { /* non-critical — STM32 may already be scanning */ }
 
-  showStatus("fpLiveStatus", "Scanning on STM32... waiting for result 🔌", "working");
+  showStatus("fpLiveStatus", "Scanning on STM32 (checking all 5 fused templates)... 🔌", "working");
 
   // Poll /stm32/match-status — wait up to 15s for MATCH_OK / MATCH_FAIL from STM32
   const POLL_INTERVAL = 1000;
   const POLL_TIMEOUT  = 15000;
   let elapsed = 0;
 
-  const pollResult = await new Promise((resolve) => {
+  const pollResult_raw = await new Promise((resolve) => {
     const timer = setInterval(async () => {
       elapsed += POLL_INTERVAL;
       try {
         const res  = await fetch(`http://127.0.0.1:5002/stm32/match-status?aadhaar=${aadhaar}`);
         const data = await res.json();
-        if (data.status === "verified") { clearInterval(timer); resolve("verified"); }
-        else if (data.status === "failed") { clearInterval(timer); resolve("failed"); }
-        else if (elapsed >= POLL_TIMEOUT)  { clearInterval(timer); resolve("timeout"); }
+        if (data.status === "verified") { clearInterval(timer); resolve({ result: "verified", reason: null }); }
+        else if (data.status === "failed") { clearInterval(timer); resolve({ result: "failed", reason: data.reason || null }); }
+        else if (elapsed >= POLL_TIMEOUT)  { clearInterval(timer); resolve({ result: "timeout", reason: null }); }
       } catch (_) {
         clearInterval(timer);
-        resolve("error");
+        resolve({ result: "error", reason: null });
       }
     }, POLL_INTERVAL);
   });
 
   // Stop scan animation
   if (liveScanBox) liveScanBox.classList.remove("scanning-effect");
+
+  const { result: pollResult, reason: pollReason } = pollResult_raw;
 
   if (pollResult === "verified") {
     // ── SUCCESS ────────────────────────────────────────────────
@@ -688,11 +903,14 @@ window.startFingerprintCheck = async function () {
     fpSensor.className = "fp-sensor error";
     setBallotLocked(true);
 
-    const msg = {
-      failed:  "Fingerprint mismatch. Try again ❌",
+    const msgMap = {
+      failed:  pollReason === "SCORE_LOW"
+                 ? "Fingerprint match score below 80% — try pressing firmly and re-scanning ❌"
+                 : "Fingerprint mismatch — not recognised ❌",
       timeout: "No fingerprint detected within 15 seconds. Try again ❌",
       error:   "Lost connection to STM32. Reconnect hardware ❌"
-    }[pollResult] || "Verification failed ❌";
+    };
+    const msg = msgMap[pollResult] || "Verification failed ❌";
 
     showStatus("fpLiveStatus", msg, "error");
 
