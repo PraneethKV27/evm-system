@@ -168,6 +168,9 @@ document.addEventListener("DOMContentLoaded", () => {
   if (voteAadhaarInput) {
     voteAadhaarInput.addEventListener("input", handleVoteAadhaarInput);
   }
+
+  // Ballot locked by default — requires real fingerprint scan to unlock
+  setBallotLocked(true);
 });
 
 // Helper to add fingerprint visual image to enrollment gallery
@@ -210,6 +213,7 @@ async function handleVoteAadhaarInput(e) {
   // Reset verification states
   liveScanVerified = false;
   verifiedVoterData = null;
+  setBallotLocked(true);
   if (compPanel) compPanel.style.display = "none";
   document.getElementById("verifyFpSensor").className = "fp-sensor";
   document.getElementById("fpLiveStatus").innerText = "Unlock ballot with biometric verification.";
@@ -413,65 +417,73 @@ window.startEnrollment = async function () {
     showStatus("fpStatus", "Please fill all fields ❌", "error");
     return;
   }
-
   if (!/^\d{12}$/.test(aadhaar)) {
     showStatus("fpStatus", "Aadhaar must be exactly 12 digits ❌", "error");
     return;
   }
-
   const age = new Date().getFullYear() - Number(dob.split("-")[0]);
   if (isNaN(age) || age < 18) {
     showStatus("fpStatus", `Voter is not eligible (Age: ${isNaN(age) ? 0 : age}, under 18) ❌`, "error");
     return;
   }
 
+  // ── STM32 REQUIRED CHECK ──────────────────────────────────────
+  const { bridge, hardware } = await checkBridgeStatus();
+  if (!bridge || !hardware) {
+    const fpSensor = document.getElementById("enrollFpSensor");
+    fpSensor.className = "fp-sensor error";
+    showStatus("fpStatus",
+      !bridge
+        ? "Fingerprint server not running. Start fingerprint-server first ❌"
+        : "STM32 not connected. Plug in the hardware to enroll ❌",
+      "error"
+    );
+    return;
+  }
+  // ─────────────────────────────────────────────────────────────
+
   registrationSamples = [];
   const fpSensor = document.getElementById("enrollFpSensor");
   fpSensor.className = "fp-sensor scanning";
-  
+
   // Clear visual fingerprint gallery
   const grid = document.getElementById("enrollFpGrid");
   const gallery = document.getElementById("enrollFpGallery");
   if (grid) grid.innerHTML = "";
   if (gallery) gallery.style.display = "none";
 
-  const { bridge: hasBridge } = await checkBridgeStatus();
-  showStatus("fpStatus", hasBridge ? "Bridge connected! Scanning 5 samples..." : "Simulating biometric scans (5 samples)...", "working");
+  showStatus("fpStatus", "STM32 connected. Scanning 5 fingerprint samples...", "working");
 
   const totalSamples = 5;
   updateSampleDots(0, totalSamples);
-
   let currentSample = 0;
-  
+
   const scanInterval = setInterval(async () => {
     currentSample++;
     let templateStr = "";
-
-    if (hasBridge) {
-      try {
-        const res = await fetch("http://127.0.0.1:5002/fingerprint/capture", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ aadhaar })
-        });
-        const data = await res.json();
-        templateStr = data.template;
-      } catch (e) {
-        templateStr = "MOCK_FP_" + Math.random().toString(36).substring(2, 9).toUpperCase();
-      }
-    } else {
-      templateStr = "FP_TEMPLATE_" + Math.random().toString(36).substring(2, 9).toUpperCase();
+    try {
+      const res = await fetch("http://127.0.0.1:5002/fingerprint/capture", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aadhaar })
+      });
+      const data = await res.json();
+      templateStr = data.template;
+    } catch (e) {
+      clearInterval(scanInterval);
+      fpSensor.className = "fp-sensor error";
+      showStatus("fpStatus", "Lost connection to STM32 during scan ❌", "error");
+      return;
     }
 
     registrationSamples.push(templateStr);
     updateSampleDots(currentSample, totalSamples);
-    addFpSampleToGallery(currentSample); // Visual gallery update
+    addFpSampleToGallery(currentSample);
     showStatus("fpStatus", `Captured sample ${currentSample}/${totalSamples} ✔`, "working");
 
     if (currentSample === totalSamples) {
       clearInterval(scanInterval);
       fpSensor.className = "fp-sensor success";
-      // registrationTemplate kept for legacy compatibility
 
       // Save Voter Account — include registered_at timestamp
       const voterPayload = {
@@ -492,31 +504,22 @@ window.startEnrollment = async function () {
       try {
         if (isFirebaseMode) {
           await setDoc(doc(db, "VoterDB", aadhaar), voterPayload);
-          // Send voter info to STM32 via bridge
-          if (hasBridge) {
-            await fetch("http://127.0.0.1:5002/fingerprint/store", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ aadhaar, samples: registrationSamples })
-            });
-            // Inform STM32 about the new voter
-            fetch("http://127.0.0.1:5002/stm32/send-voter-info", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                aadhaar,
-                name:   voterPayload.name,
-                age:    voterPayload.age,
-                gender: voterPayload.gender
-              })
-            }).catch(() => {});
-          }
+          await fetch("http://127.0.0.1:5002/fingerprint/store", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ aadhaar, samples: registrationSamples })
+          });
+          // Inform STM32 about the new voter
+          fetch("http://127.0.0.1:5002/stm32/send-voter-info", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ aadhaar, name: voterPayload.name, age: voterPayload.age, gender: voterPayload.gender })
+          }).catch(() => {});
         } else {
           await mockDB.setVoter(aadhaar, voterPayload);
         }
         showStatus("fpStatus", "Voter Registered & Biometrics Saved ✔", "success");
-        
-        // Clear form after delay to allow next registration
+
         setTimeout(() => {
           document.getElementById("aadhaar").value = "";
           document.getElementById("name").value = "";
@@ -527,8 +530,6 @@ window.startEnrollment = async function () {
           fpSensor.className = "fp-sensor";
           showStatus("fpStatus", "Click the scanner to enroll biometrics.", "");
           updateSampleDots(0, totalSamples);
-          const grid = document.getElementById("enrollFpGrid");
-          const gallery = document.getElementById("enrollFpGallery");
           if (grid) grid.innerHTML = "";
           if (gallery) gallery.style.display = "none";
         }, 2000);
@@ -554,12 +555,29 @@ window.startFingerprintCheck = async function () {
     return;
   }
 
+  // ── STM32 REQUIRED CHECK ──────────────────────────────────────
+  const { bridge, hardware } = await checkBridgeStatus();
+  if (!bridge || !hardware) {
+    fpSensor.className = "fp-sensor error";
+    showStatus("fpLiveStatus",
+      !bridge
+        ? "Fingerprint server not running. Start server first ❌"
+        : "STM32 not connected. Connect hardware to verify fingerprint ❌",
+      "error"
+    );
+    // Hide ballot — cannot proceed without hardware
+    setBallotLocked(true);
+    return;
+  }
+  // ─────────────────────────────────────────────────────────────
+
   liveScanVerified = false;
   verifiedVoterData = null;
+  setBallotLocked(true);
   fpSensor.className = "fp-sensor scanning";
-  showStatus("fpLiveStatus", "Place finger on the sensor... scanning 👆", "working");
+  showStatus("fpLiveStatus", "Place finger on the STM32 sensor... 👆", "working");
 
-  // Show visual comparison and start scanning animation
+  // Show visual comparison panel
   if (compPanel) compPanel.style.display = "flex";
   if (liveScanBox) {
     liveScanBox.className = "comparison-fp-box scanning-effect";
@@ -571,7 +589,7 @@ window.startFingerprintCheck = async function () {
     liveImg.style.filter = "hue-rotate(180deg) blur(2px)";
   }
 
-  // Fetch Voter Details
+  // Fetch Voter Details from Firestore
   let voter = null;
   try {
     if (isFirebaseMode) {
@@ -585,154 +603,108 @@ window.startFingerprintCheck = async function () {
   }
 
   if (!voter) {
-    setTimeout(() => {
-      fpSensor.className = "fp-sensor error";
-      showStatus("fpLiveStatus", "Voter Aadhaar not found ❌", "error");
-      if (compPanel) compPanel.style.display = "none";
-    }, 800);
+    fpSensor.className = "fp-sensor error";
+    showStatus("fpLiveStatus", "Voter Aadhaar not found ❌", "error");
+    if (compPanel) compPanel.style.display = "none";
     return;
   }
 
   if (voter.flag === 1) {
-    setTimeout(() => {
-      fpSensor.className = "fp-sensor error";
-      showStatus("fpLiveStatus", "Voter has already cast their vote ❌", "error");
-      if (compPanel) compPanel.style.display = "none";
-    }, 800);
+    fpSensor.className = "fp-sensor error";
+    showStatus("fpLiveStatus", "Voter has already cast their vote ❌", "error");
+    if (compPanel) compPanel.style.display = "none";
     return;
   }
 
-  const { bridge: hasBridge } = await checkBridgeStatus();
-  
-  setTimeout(async () => {
-    let matched = false;
+  // Trigger STM32 to start scanning
+  try {
+    await fetch("http://127.0.0.1:5002/fingerprint/capture", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ aadhaar })
+    });
+  } catch (_) { /* non-critical — STM32 may already be scanning */ }
 
-    if (hasBridge) {
+  showStatus("fpLiveStatus", "Scanning on STM32... waiting for result 🔌", "working");
+
+  // Poll /stm32/match-status — wait up to 15s for MATCH_OK / MATCH_FAIL from STM32
+  const POLL_INTERVAL = 1000;
+  const POLL_TIMEOUT  = 15000;
+  let elapsed = 0;
+
+  const pollResult = await new Promise((resolve) => {
+    const timer = setInterval(async () => {
+      elapsed += POLL_INTERVAL;
       try {
-        // Trigger a capture on the STM32 side so it knows to scan
-        try {
-          await fetch("http://127.0.0.1:5002/fingerprint/capture", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ aadhaar })
-          });
-        } catch (_) { /* ignore pre-trigger errors */ }
-
-        // Poll /stm32/match-status for up to 10 s waiting for MATCH_OK from STM32
-        const POLL_INTERVAL = 1000;
-        const POLL_TIMEOUT  = 10000;
-        let   elapsed       = 0;
-
-        showStatus("fpLiveStatus", "Waiting for STM32 fingerprint result... 🔌", "working");
-
-        const pollResult = await new Promise((resolve) => {
-          const timer = setInterval(async () => {
-            elapsed += POLL_INTERVAL;
-            try {
-              const res  = await fetch(
-                `http://127.0.0.1:5002/stm32/match-status?aadhaar=${aadhaar}`
-              );
-              const data = await res.json();
-
-              if (data.status === "verified") {
-                clearInterval(timer);
-                resolve(true);
-              } else if (data.status === "failed") {
-                clearInterval(timer);
-                resolve(false);
-              } else if (elapsed >= POLL_TIMEOUT) {
-                clearInterval(timer);
-                // Timeout — fall back to software verify
-                resolve(null);
-              }
-            } catch (_) {
-              clearInterval(timer);
-              resolve(null); // bridge error — fall through to software verify
-            }
-          }, POLL_INTERVAL);
-        });
-
-        if (pollResult === true) {
-          matched = true;
-        } else if (pollResult === false) {
-          matched = false;
-        } else {
-          // null = timeout or bridge error — fall back to template-based software verify
-          const fpRes = await fetch("http://127.0.0.1:5002/fingerprint/capture", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ aadhaar })
-          });
-          const fpData = await fpRes.json();
-          const verifyRes = await fetch("http://127.0.0.1:5002/fingerprint/verify", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ aadhaar, template: fpData.template })
-          });
-          const result = await verifyRes.json();
-          matched = result.match;
-        }
-      } catch (e) {
-        matched = true; // network error fallback
+        const res  = await fetch(`http://127.0.0.1:5002/stm32/match-status?aadhaar=${aadhaar}`);
+        const data = await res.json();
+        if (data.status === "verified") { clearInterval(timer); resolve("verified"); }
+        else if (data.status === "failed") { clearInterval(timer); resolve("failed"); }
+        else if (elapsed >= POLL_TIMEOUT)  { clearInterval(timer); resolve("timeout"); }
+      } catch (_) {
+        clearInterval(timer);
+        resolve("error");
       }
-    } else {
-      // No bridge — full simulation, always succeeds for registered voter
-      matched = true;
-    }
+    }, POLL_INTERVAL);
+  });
 
-    // Stop laser scan animation
+  // Stop scan animation
+  if (liveScanBox) liveScanBox.classList.remove("scanning-effect");
+
+  if (pollResult === "verified") {
+    // ── SUCCESS ────────────────────────────────────────────────
+    liveScanVerified = true;
+    verifiedVoterData = voter;
+    fpSensor.className = "fp-sensor success";
+    showStatus("fpLiveStatus", "Fingerprint Verified — Voting Enabled ✔", "success");
+    setBallotLocked(false); // ← unlock the ballot
+
     if (liveScanBox) {
-      liveScanBox.classList.remove("scanning-effect");
+      liveScanBox.style.borderColor = "var(--success)";
+      liveScanBox.style.boxShadow   = "0 0 15px rgba(16, 185, 129, 0.4)";
+    }
+    if (liveImg) {
+      liveImg.style.opacity = "1";
+      liveImg.style.filter  = "hue-rotate(180deg) brightness(1.2)";
     }
 
-    if (matched) {
-      liveScanVerified = true;
-      verifiedVoterData = voter;
-      fpSensor.className = "fp-sensor success";
-      showStatus("fpLiveStatus", "Fingerprint Verified — Voting Enabled ✔", "success");
+    // Update Firestore fingerprint_status
+    fetch("http://127.0.0.1:5002/stm32/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ voter_id: aadhaar })
+    }).catch(() => {});
 
-      // Update Firestore fingerprint_status via bridge (non-blocking)
-      if (hasBridge) {
-        fetch("http://127.0.0.1:5002/stm32/verify", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ voter_id: aadhaar })
-        }).catch(() => {});
-      }
-
-      // If in Firebase mode, also update directly
-      if (isFirebaseMode) {
-        setDoc(doc(db, "VoterDB", aadhaar), {
-          fingerprint_status: "verified",
-          last_verify_status: "matched"
-        }, { merge: true }).catch(() => {});
-      }
-      
-      // Update visual comparison success state
-      if (liveScanBox) {
-        liveScanBox.style.borderColor = "var(--success)";
-        liveScanBox.style.boxShadow = "0 0 15px rgba(16, 185, 129, 0.4)";
-      }
-      if (liveImg) {
-        liveImg.style.opacity = "1";
-        liveImg.style.filter = "hue-rotate(180deg) brightness(1.2)"; // neon blue
-      }
-    } else {
-      liveScanVerified = false;
-      fpSensor.className = "fp-sensor error";
-      showStatus("fpLiveStatus", "Fingerprint mismatch. Try again ❌", "error");
-      
-      // Update visual comparison error state
-      if (liveScanBox) {
-        liveScanBox.style.borderColor = "var(--danger)";
-        liveScanBox.style.boxShadow = "0 0 15px rgba(239, 68, 68, 0.4)";
-      }
-      if (liveImg) {
-        liveImg.style.opacity = "0.2";
-        liveImg.style.filter = "grayscale(1)";
-      }
+    if (isFirebaseMode) {
+      setDoc(doc(db, "VoterDB", aadhaar), {
+        fingerprint_status: "verified",
+        last_verify_status: "matched"
+      }, { merge: true }).catch(() => {});
     }
-  }, 1800);
+
+  } else {
+    // ── FAILURE / TIMEOUT ──────────────────────────────────────
+    liveScanVerified = false;
+    fpSensor.className = "fp-sensor error";
+    setBallotLocked(true);
+
+    const msg = {
+      failed:  "Fingerprint mismatch. Try again ❌",
+      timeout: "No fingerprint detected within 15 seconds. Try again ❌",
+      error:   "Lost connection to STM32. Reconnect hardware ❌"
+    }[pollResult] || "Verification failed ❌";
+
+    showStatus("fpLiveStatus", msg, "error");
+
+    if (liveScanBox) {
+      liveScanBox.style.borderColor = "var(--danger)";
+      liveScanBox.style.boxShadow   = "0 0 15px rgba(239, 68, 68, 0.4)";
+    }
+    if (liveImg) {
+      liveImg.style.opacity = "0.2";
+      liveImg.style.filter  = "grayscale(1)";
+    }
+  }
 };
 
 // ================= Cast Vote =================
@@ -790,6 +762,7 @@ window.vote = async function (party) {
     // Clear states
     liveScanVerified = false;
     verifiedVoterData = null;
+    setBallotLocked(true);
     document.getElementById("voteAadhaar").value = "";
     document.getElementById("verifyFpSensor").className = "fp-sensor";
     document.getElementById("fpLiveStatus").innerText = "";
@@ -828,6 +801,23 @@ function showStatus(elementId, text, type) {
   if (!el) return;
   el.innerText = text;
   el.className = "status-text " + (type || "");
+}
+
+// Lock or unlock the ballot — ballot items are visually disabled
+// and the vote() function checks liveScanVerified as a hard gate
+function setBallotLocked(locked) {
+  const items = document.querySelectorAll(".ballot-item");
+  items.forEach(item => {
+    if (locked) {
+      item.style.opacity = "0.35";
+      item.style.pointerEvents = "none";
+      item.style.cursor = "not-allowed";
+    } else {
+      item.style.opacity = "1";
+      item.style.pointerEvents = "auto";
+      item.style.cursor = "pointer";
+    }
+  });
 }
 
 function updateSampleDots(count, total) {
