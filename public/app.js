@@ -7,8 +7,7 @@ import {
   runTransaction,
   collection,
   onSnapshot,
-  query,
-  orderBy
+  query
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 // ================= Firebase Configuration =================
@@ -288,7 +287,6 @@ async function handleVoteAadhaarInput(e) {
 
 // ================= Global States =================
 let registrationSamples = [];
-let registrationTemplate = null;
 let liveScanVerified = false;
 let verifiedVoterData = null;
 
@@ -428,7 +426,6 @@ window.startEnrollment = async function () {
   }
 
   registrationSamples = [];
-  registrationTemplate = null;
   const fpSensor = document.getElementById("enrollFpSensor");
   fpSensor.className = "fp-sensor scanning";
   
@@ -474,19 +471,22 @@ window.startEnrollment = async function () {
     if (currentSample === totalSamples) {
       clearInterval(scanInterval);
       fpSensor.className = "fp-sensor success";
-      registrationTemplate = registrationSamples;
+      // registrationTemplate kept for legacy compatibility
 
-      // Save Voter Account
+      // Save Voter Account — include registered_at timestamp
       const voterPayload = {
         aadhaar,
         name,
         dob,
         age,
         gender,
+        mobile: document.getElementById("mobile").value.trim(),
+        email:  document.getElementById("email").value.trim(),
         fp_samples: registrationSamples,
         flag: 0,
         eligible: true,
-        voted_party: ""
+        voted_party: "",
+        registered_at: new Date().toISOString()
       };
 
       try {
@@ -535,7 +535,6 @@ window.startFingerprintCheck = async function () {
   const aadhaar = document.getElementById("voteAadhaar").value.trim();
   const fpSensor = document.getElementById("verifyFpSensor");
   const compPanel = document.getElementById("verifyComparisonPanel");
-  const dbImg = document.getElementById("dbFpImage");
   const liveImg = document.getElementById("liveFpImage");
   const liveScanBox = document.querySelector("#verifyComparisonPanel .comparison-side:last-child .comparison-fp-box");
 
@@ -599,16 +598,14 @@ window.startFingerprintCheck = async function () {
 
     if (hasBridge) {
       try {
-        // Send VERIFY command to STM32 via bridge
-        ser_write_cmd: {
-          try {
-            await fetch("http://127.0.0.1:5002/fingerprint/capture", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ aadhaar })
-            });
-          } catch (_) { /* ignore */ }
-        }
+        // Trigger a capture on the STM32 side so it knows to scan
+        try {
+          await fetch("http://127.0.0.1:5002/fingerprint/capture", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ aadhaar })
+          });
+        } catch (_) { /* ignore pre-trigger errors */ }
 
         // Poll /stm32/match-status for up to 10 s waiting for MATCH_OK from STM32
         const POLL_INTERVAL = 1000;
@@ -741,23 +738,26 @@ window.vote = async function (party) {
   try {
     if (isFirebaseMode) {
       await runTransaction(db, async (tx) => {
-        const ref = doc(db, "VoterDB", aadhaar);
-        const snap = await tx.get(ref);
-        if (snap.data().flag === 1) {
+        const voterRef = doc(db, "VoterDB", aadhaar);
+        const partyRef = doc(db, "PartyDB", party);
+
+        const voterSnap = await tx.get(voterRef);
+        const partySnap = await tx.get(partyRef);
+
+        if (voterSnap.data().flag === 1) {
           throw new Error("Already voted");
         }
 
         // Update Voter Status
-        tx.update(ref, {
+        tx.update(voterRef, {
           flag: 1,
           voted_party: party,
           voted_at: new Date().toISOString()
         });
 
-        // Update Party Stats
-        const partyRef = doc(db, "PartyDB", party);
+        // Update Party Stats — read partySnap for current vote count
         tx.update(partyRef, {
-          votes: (snap.data().votes || 0) + 1
+          votes: (partySnap.data().votes || 0) + 1
         });
       });
     } else {
@@ -1522,7 +1522,7 @@ function startRegisteredListener() {
     renderRegisteredFromLocal();
     return;
   }
-  if (registeredUnsubscribe) return; // already listening
+  if (registeredUnsubscribe) return; // already listening live
 
   const q = query(collection(db, "VoterDB"));
   registeredUnsubscribe = onSnapshot(q, (snapshot) => {

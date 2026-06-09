@@ -6,15 +6,17 @@ Listens to STM32 UART output (via pyserial) and bridges it to:
   - The SecEVM web frontend (REST API on port 5002)
 
 STM32 UART Message Format expected:
-  ENROLL_OK:ID=<aadhaar>:SAMPLES=<n>
-  VERIFY_OK:ID=<aadhaar>
-  VERIFY_FAIL:ID=<aadhaar>
-  VOTE_CAST:ID=<aadhaar>:PARTY=<party>
-  ERROR:<message>
+  MATCH_OK ID=<aadhaar>              ← fingerprint matched (primary format)
+  MATCH_FAIL ID=<aadhaar>            ← fingerprint mismatch
+  ENROLL_OK:ID=<aadhaar>:SAMPLES=<n> ← enrollment complete
+  VERIFY_OK:ID=<aadhaar>             ← alias for MATCH_OK (older firmware)
+  VERIFY_FAIL:ID=<aadhaar>           ← alias for MATCH_FAIL (older firmware)
+  VOTE_CAST:ID=<aadhaar>:PARTY=<p>  ← direct vote cast from hardware
+  ERROR:<message>                    ← error log
 
 Configuration:
-  - Set SERIAL_PORT to your actual COM port (e.g. COM3 on Windows, /dev/ttyUSB0 on Linux)
-  - Set SERIAL_BAUD to match your STM32 UART baud rate (default 115200)
+  - Set STM32_PORT env var to your COM port (e.g. COM3 on Windows, /dev/ttyUSB0 on Linux)
+  - Set STM32_BAUD env var to match your STM32 UART baud rate (default 115200)
   - Place serviceAccountKey.json in the same directory as this file
 """
 

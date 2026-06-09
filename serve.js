@@ -19,7 +19,17 @@ const mimeTypes = {
 
 const server = http.createServer((req, res) => {
   let urlPath = req.url === "/" ? "/index.html" : req.url;
-  const filePath = path.join(PUBLIC_DIR, urlPath);
+
+  // Strip query strings and fragments
+  urlPath = urlPath.split("?")[0].split("#")[0];
+
+  // Resolve path and ensure it stays inside PUBLIC_DIR (prevent path traversal)
+  const filePath = path.resolve(PUBLIC_DIR, "." + urlPath);
+  if (!filePath.startsWith(PUBLIC_DIR + path.sep) && filePath !== PUBLIC_DIR) {
+    res.writeHead(403);
+    res.end("403 Forbidden");
+    return;
+  }
 
   fs.readFile(filePath, (err, data) => {
     if (err) {

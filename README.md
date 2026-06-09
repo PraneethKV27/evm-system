@@ -281,7 +281,24 @@ Both backends understand the same UART messages from STM32:
 
 ---
 
-## 🧪 Testing Without Hardware
+## 🐛 Known Issues Fixed
+
+| File | Issue | Fix Applied |
+|------|-------|-------------|
+| `app.js` | `orderBy` imported but never used | Removed unused import |
+| `app.js` | `registered_at` never saved during registration but shown in Registered Voters table | Now saved as `new Date().toISOString()` in voter payload |
+| `app.js` | `mobile`/`email` not included in voter payload saved to Firestore | Added to payload |
+| `app.js` | Vote transaction read `snap.data().votes` from VoterDB (wrong collection) | Fixed to read `partySnap.data().votes` from PartyDB |
+| `app.js` | `ser_write_cmd:` was an invalid JS labeled block (dead code) | Replaced with clean `try/catch` |
+| `app.js` | `dbImg` and `registrationTemplate` declared but never used | Removed |
+| `server.js` | UART key=value parser split on all `=` signs, truncating values with `=` | Fixed to split only on first `=` |
+| `server.js` | Serial `data` event processed per chunk not per line — multi-byte UART messages split | Added `_uartBuffer` to accumulate and split on `\n` |
+| `serve.js` | No path sanitization — path traversal vulnerability (`../../etc/passwd`) | Added `path.resolve` + boundary check |
+| `index.html` | Tab comments mislabelled (Stats as TAB 2, Dev Hub as TAB 3) | Corrected to TAB 3 and TAB 6 |
+| `fp_bridge.py` | Docstring listed old UART format, missing `MATCH_OK`/`MATCH_FAIL` | Updated to match current implementation |
+| `firestore.indexes.json` | JS-style `//` comments invalid in JSON | Removed all comments |
+
+
 
 All features work without an STM32 connected:
 - Hardware badge shows 🟡 `STM32: Not Connected`

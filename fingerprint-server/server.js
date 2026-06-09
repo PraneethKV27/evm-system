@@ -82,10 +82,17 @@ async function detectAndConnectSTM32() {
     });
 
     stm32.on("data", (data) => {
-      const line = data.toString("utf8").trim();
-      if (line) {
-        console.log(`[UART] ${line}`);
-        handleUARTLine(line);
+      // Buffer incoming bytes — STM32 may send data in chunks, not full lines
+      _uartBuffer += data.toString("utf8");
+      const lines = _uartBuffer.split("\n");
+      // Keep the last (possibly incomplete) fragment in the buffer
+      _uartBuffer = lines.pop();
+      for (const line of lines) {
+        const trimmed = line.replace(/\r/g, "").trim();
+        if (trimmed) {
+          console.log(`[UART] ${trimmed}`);
+          handleUARTLine(trimmed);
+        }
       }
     });
 
@@ -111,14 +118,21 @@ async function detectAndConnectSTM32() {
 // Inbound UART line handler
 const matchResults = {};   // { aadhaar: { status: "verified"|"failed", ts: Date.now() } }
 
+// Line buffer for incomplete UART chunks
+let _uartBuffer = "";
+
 function handleUARTLine(line) {
+  line = line.trim();
+  if (!line) return;
+
   // Normalise: "MATCH_OK ID=123..." or "MATCH_OK:ID=123..."
   const normalized = line.replace(/\s+/g, ":");
   const parts = {};
   normalized.split(":").forEach(seg => {
-    if (seg.includes("=")) {
-      const [k, v] = seg.split("=");
-      parts[k.trim()] = v.trim();
+    const eqIdx = seg.indexOf("=");
+    if (eqIdx > -1) {
+      // Split only on first "=" so values containing "=" are preserved
+      parts[seg.substring(0, eqIdx).trim()] = seg.substring(eqIdx + 1).trim();
     }
   });
 
