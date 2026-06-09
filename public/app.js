@@ -492,13 +492,24 @@ window.startEnrollment = async function () {
       try {
         if (isFirebaseMode) {
           await setDoc(doc(db, "VoterDB", aadhaar), voterPayload);
-          // Optional API call to local bridge store
+          // Send voter info to STM32 via bridge
           if (hasBridge) {
             await fetch("http://127.0.0.1:5002/fingerprint/store", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ aadhaar, samples: registrationSamples })
             });
+            // Inform STM32 about the new voter
+            fetch("http://127.0.0.1:5002/stm32/send-voter-info", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                aadhaar,
+                name:   voterPayload.name,
+                age:    voterPayload.age,
+                gender: voterPayload.gender
+              })
+            }).catch(() => {});
           }
         } else {
           await mockDB.setVoter(aadhaar, voterPayload);
@@ -765,6 +776,16 @@ window.vote = async function (party) {
     }
 
     showStatus("voteStatus", `Vote Cast Successfully for ${party} ✔`, "success");
+
+    // Notify STM32 that vote was recorded
+    const { bridge: bridgeUp } = await checkBridgeStatus();
+    if (bridgeUp) {
+      fetch("http://127.0.0.1:5002/stm32/ack-vote", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aadhaar, party })
+      }).catch(() => {});
+    }
     
     // Clear states
     liveScanVerified = false;

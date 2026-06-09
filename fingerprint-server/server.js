@@ -156,12 +156,47 @@ function handleUARTLine(line) {
         (_, i) => `STM32_FP_${id}_${i}`);
       console.log(`[ENROLL] Stored ${samples} samples for ${id}`);
     }
+  } else if (line.startsWith("VOTER_DATA")) {
+    // STM32 forwarding voter info: VOTER_DATA:ID=<>:NAME=<>:AGE=<>:GENDER=<>
+    const id     = parts["ID"];
+    const name   = parts["NAME"]   || "";
+    const age    = parts["AGE"]    || "";
+    const gender = parts["GENDER"] || "";
+    if (id) {
+      voterDataCache[id] = { aadhaar: id, name, age: parseInt(age) || 0, gender, ts: Date.now() };
+      console.log(`[VOTER_DATA] Received from STM32 — ${id}: ${name}, ${age}`);
+    }
+  } else if (line.startsWith("REQUEST_VOTER")) {
+    // STM32 asking for voter info — we respond via serial if connected
+    const id = parts["REQUEST_VOTER"] || line.split(":")[1];
+    console.log(`[REQUEST_VOTER] STM32 wants info for ${id}`);
+    // The /voter-info REST endpoint handles the response
+  } else if (line.startsWith("STATUS")) {
+    console.log(`[STM32 STATUS] ${line}`);
   }
 }
 
 // Poll for STM32 every 3 seconds
 detectAndConnectSTM32();
 setInterval(detectAndConnectSTM32, 3000);
+
+// ===============================
+// In-memory voter data cache
+// (filled when STM32 sends VOTER_DATA)
+// ===============================
+const voterDataCache = {}; // { aadhaar: { name, age, gender, ts } }
+
+// Helper: send a command string to STM32 via UART
+function sendToSTM32(msg) {
+  if (stm32 && stm32.isOpen) {
+    stm32.write(msg + "\n", (err) => {
+      if (err) console.error("[STM32 WRITE]", err.message);
+      else console.log(`[→STM32] ${msg}`);
+    });
+  } else {
+    console.warn("[STM32] Not connected — cannot send:", msg);
+  }
+}
 
 // ===============================
 // STATUS endpoint — used by the
@@ -255,6 +290,71 @@ app.post("/stm32/event", (req, res) => {
   if (!line) return res.status(400).json({ status: "error", message: "Missing line" });
   handleUARTLine(line.trim());
   res.json({ status: "ok", received: line });
+});
+
+// ===============================
+// STM32 VOTER DATA — frontend poll
+// Frontend polls this after enrollment to get voter info received from STM32
+// ===============================
+app.get("/stm32/voter-data", (req, res) => {
+  const aadhaar = (req.query.aadhaar || "").trim();
+  if (!aadhaar) return res.json({ found: false });
+
+  const data = voterDataCache[aadhaar];
+  if (data && (Date.now() - data.ts) < 300000) { // 5 min expiry
+    return res.json({ found: true, ...data });
+  }
+  res.json({ found: false, aadhaar });
+});
+
+// ===============================
+// Send VOTER_INFO back to STM32
+// Called by frontend after fetching voter from Firestore
+// Body: { aadhaar, name, age, gender }
+// ===============================
+app.post("/stm32/send-voter-info", (req, res) => {
+  const { aadhaar, name, age, gender } = req.body || {};
+  if (!aadhaar) return res.status(400).json({ status: "error", message: "Missing aadhaar" });
+
+  const msg = `VOTER_INFO:${aadhaar}:${name || ""}:${age || ""}:${gender || ""}`;
+  sendToSTM32(msg);
+  res.json({ status: "ok", sent: msg });
+});
+
+// ===============================
+// Send ACK_VOTE back to STM32
+// Called after vote is recorded in Firestore
+// Body: { aadhaar, party }
+// ===============================
+app.post("/stm32/ack-vote", (req, res) => {
+  const { aadhaar, party } = req.body || {};
+  if (!aadhaar || !party) return res.status(400).json({ status: "error" });
+
+  const msg = `ACK_VOTE:${aadhaar}:${party}`;
+  sendToSTM32(msg);
+  res.json({ status: "ok", sent: msg });
+});
+
+// ===============================
+// Trigger STM32 to start enrollment for an Aadhaar
+// Body: { aadhaar }
+// ===============================
+app.post("/stm32/cmd-enroll", (req, res) => {
+  const { aadhaar } = req.body || {};
+  if (!aadhaar) return res.status(400).json({ status: "error", message: "Missing aadhaar" });
+  sendToSTM32(`CMD_ENROLL:${aadhaar}`);
+  res.json({ status: "ok", command: `CMD_ENROLL:${aadhaar}` });
+});
+
+// ===============================
+// Trigger STM32 to run live verify for an Aadhaar
+// Body: { aadhaar }
+// ===============================
+app.post("/stm32/cmd-verify", (req, res) => {
+  const { aadhaar } = req.body || {};
+  if (!aadhaar) return res.status(400).json({ status: "error", message: "Missing aadhaar" });
+  sendToSTM32(`CMD_VERIFY:${aadhaar}`);
+  res.json({ status: "ok", command: `CMD_VERIFY:${aadhaar}` });
 });
 
 // ===============================

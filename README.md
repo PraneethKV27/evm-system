@@ -174,7 +174,76 @@ evm-system/
 
 ---
 
-## 🔌 API Endpoints
+## � STM32 Firmware (`stm32/main.c`)
+
+### Hardware Connections
+
+| Component | Pin | Direction |
+|-----------|-----|-----------|
+| R307 Fingerprint TX | USART1 RX (PA10) | Input |
+| R307 Fingerprint RX | USART1 TX (PA9)  | Output |
+| PC / Bridge UART TX | USART2 RX (PA3)  | Input |
+| PC / Bridge UART RX | USART2 TX (PA2)  | Output |
+| Green LED | PA5 | Output |
+| Red LED   | PA6 | Output |
+| Buzzer    | PB0 | Output |
+| BTN_CONFIRM (Blue button) | PC13 | Input (active-low) |
+| BTN_NEXT (digit cycle)    | PB1  | Input (active-low, pull-up) |
+
+### Button Operation — Aadhaar Entry
+
+1. Press **CONFIRM** (PC13) to start enrollment mode
+2. Press **NEXT** (PB1) to cycle current digit 0→9
+3. Press **CONFIRM** to lock in each digit (12 digits total)
+4. After 12 digits, STM32 automatically starts fingerprint enrollment
+
+### R307 Enrollment Flow (5 samples)
+
+```
+CONFIRM pressed → enter Aadhaar → STM32 asks PC for voter info
+→ 5× (place finger → GenImg → Img2Tz) → RegModel → Store at page 1
+→ Sends "ENROLL_OK:ID=<aadhaar>:SAMPLES=5" to PC
+```
+
+### Verification Flow
+
+```
+PC sends "CMD_VERIFY:<aadhaar>" → STM32 prompts finger scan
+→ GenImg → Img2Tz → Search all templates
+→ Sends "MATCH_OK ID=<aadhaar>" or "MATCH_FAIL ID=<aadhaar>" to PC
+```
+
+### STM32 ↔ PC Command Protocol (USART2 @ 115200)
+
+**STM32 → PC:**
+
+| Message | Trigger |
+|---------|---------|
+| `ENROLL_OK:ID=<aadhaar>:SAMPLES=5` | Enrollment complete |
+| `MATCH_OK ID=<aadhaar>` | Fingerprint matched |
+| `MATCH_FAIL ID=<aadhaar>` | Fingerprint mismatch |
+| `VOTER_DATA:ID=<>:NAME=<>:AGE=<>:GENDER=<>` | Voter info forwarded to PC |
+| `REQUEST_VOTER:<aadhaar>` | Asking PC to send voter info |
+| `STATUS:<message>` | Debug status messages |
+
+**PC → STM32:**
+
+| Message | Action |
+|---------|--------|
+| `VOTER_INFO:<aadhaar>:<name>:<age>:<gender>` | Send voter info to display/confirm |
+| `ACK_VOTE:<aadhaar>:<party>` | Confirm vote was recorded in Firestore |
+| `CMD_ENROLL:<aadhaar>` | Remotely trigger enrollment |
+| `CMD_VERIFY:<aadhaar>` | Remotely trigger verification |
+
+### Flashing to STM32
+
+1. Open STM32CubeIDE and create a new project for your board (e.g. Nucleo-F411RE)
+2. Replace the generated `Core/Src/main.c` with `stm32/main.c`
+3. Adjust `SystemClock_Config()` if your MCU differs from STM32F4
+4. Build and flash via ST-Link
+5. Connect USART2 TX/RX to the PC (USB-UART adapter or built-in ST-Link VCP)
+
+---
 
 ### Node.js Fingerprint Server (`fingerprint-server/server.js`, port 5002)
 
@@ -188,6 +257,11 @@ evm-system/
 | POST | `/stm32/verify` | Mark match result `{ voter_id }` → sets `verified` status |
 | POST | `/stm32/event` | Push raw UART line `{ line: "MATCH_OK ID=..." }` |
 | GET  | `/stm32/match-status?aadhaar=` | Frontend polls this for MATCH_OK result |
+| GET  | `/stm32/voter-data?aadhaar=` | Get voter info received from STM32 hardware |
+| POST | `/stm32/send-voter-info` | Send `VOTER_INFO` back to STM32 `{ aadhaar, name, age, gender }` |
+| POST | `/stm32/ack-vote` | Send `ACK_VOTE` to STM32 after Firestore confirms `{ aadhaar, party }` |
+| POST | `/stm32/cmd-enroll` | Remotely trigger STM32 enrollment `{ aadhaar }` |
+| POST | `/stm32/cmd-verify` | Remotely trigger STM32 verification `{ aadhaar }` |
 
 ---
 
