@@ -373,12 +373,10 @@ static uint8_t R307_Enroll(const char *aadhaar)
         uint16_t rawLen = 0;
         code = R307_UploadCharBuffer(rawBuf, &rawLen);
         if (code != 0x00 || rawLen == 0) {
-            Debug_Print("CharBuffer upload failed — using placeholder\r\n");
-            /* Send a placeholder so the backend still has something */
-            snprintf(b64Buf, sizeof(b64Buf), "PLACEHOLDER_%s_%d", aadhaar, sample);
-        } else {
-            Base64Encode(rawBuf, rawLen, b64Buf);
+            Debug_Print("CharBuffer upload failed — aborting enrollment\r\n");
+            return (code != 0x00) ? code : 0xFF;
         }
+        Base64Encode(rawBuf, rawLen, b64Buf);
 
         /* TEMPLATE_n:ID=<aadhaar>:DATA=<base64> */
         /* Build message in parts to avoid stack overflow */
@@ -558,11 +556,11 @@ static void ProcessRxLine(const char *line)
         static uint8_t rawBuf[TEMPLATE_BYTES + 16];
         uint16_t rawLen = Base64Decode(b64, rawBuf);
 
-        if (rawLen == 0) {
-            /* Placeholder or invalid — skip actual sensor write but count it */
-            char loadLogMsg[48];
-            snprintf(loadLogMsg, sizeof(loadLogMsg), "Template %d: placeholder, skip write\r\n", page);
+        if (rawLen == 0 || strncmp(b64, "PLACEHOLDER_", 12) == 0) {
+            char loadLogMsg[56];
+            snprintf(loadLogMsg, sizeof(loadLogMsg), "Template %d: rejected invalid data\r\n", page);
             Debug_Print(loadLogMsg);
+            return;
         } else {
             /* Download into CharBuffer1, then Store at page `page` */
             uint8_t code = R307_DownloadCharBuffer(rawBuf, rawLen);

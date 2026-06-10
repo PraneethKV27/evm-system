@@ -114,6 +114,27 @@ const templateStore  = {};  // { aadhaar: { 1: base64, 2: base64, ... } }
 let _uartBuffer = "";
 const voterDataCache = {};
 
+const REQUIRED_FP_SAMPLES = 5;
+
+function isRealR307Template(tmpl) {
+  if (!tmpl || typeof tmpl !== "string") return false;
+  if (/^(MOCK_FP_|STM32_FP_|FP_|PLACEHOLDER_)/.test(tmpl)) return false;
+  return tmpl.length >= 64 && /^[A-Za-z0-9+/=]+$/.test(tmpl);
+}
+
+function getValidTemplates(aadhaar) {
+  const stored = templateStore[aadhaar] || {};
+  const valid = {};
+  Object.entries(stored).forEach(([k, v]) => {
+    if (isRealR307Template(v)) valid[k] = v;
+  });
+  return valid;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function handleUARTLine(line) {
   line = line.trim();
   if (!line) return;
@@ -149,9 +170,13 @@ function handleUARTLine(line) {
       const id = parts["ID"];
       const b64data = parts["DATA"] || line.split("DATA=")[1] || "";
       if (id && b64data) {
+        if (!isRealR307Template(b64data)) {
+          console.warn(`[TEMPLATE] Rejected invalid template ${n} for ${id}`);
+          return;
+        }
         if (!templateStore[id]) templateStore[id] = {};
         templateStore[id][n] = b64data;
-        console.log(`[TEMPLATE] Stored template ${n} for ${id} (${b64data.length} chars)`);
+        console.log(`[TEMPLATE] Stored R307 template ${n} for ${id} (${b64data.length} chars)`);
       }
     }
     return;
@@ -162,10 +187,12 @@ function handleUARTLine(line) {
     const id      = parts["ID"];
     const samples = parseInt(parts["SAMPLES"] || "5");
     if (id) {
-      fingerprintDB[id] = Array.from({ length: samples },
-        (_, i) => `STM32_FP_${id}_${i}`);
+      const valid = getValidTemplates(id);
+      if (Object.keys(valid).length > 0) {
+        fingerprintDB[id] = Object.values(valid);
+      }
       enrollResults[id] = { status: "complete", ts: Date.now() };
-      console.log(`[ENROLL] Complete for ${id} (${samples} samples)`);
+      console.log(`[ENROLL] Complete for ${id} (${Object.keys(valid).length || samples} R307 templates)`);
     }
     return;
   }
@@ -340,11 +367,21 @@ app.post("/stm32/store-templates", (req, res) => {
   const { aadhaar, templates } = req.body || {};
   if (!aadhaar || !templates) return res.status(400).json({ status: "error", message: "Missing aadhaar or templates" });
 
-  templateStore[aadhaar] = templates;
-  // Also store as flat array for /fingerprint/verify
-  fingerprintDB[aadhaar] = Object.values(templates);
-  console.log(`[TEMPLATES] Stored ${Object.keys(templates).length} templates for ${aadhaar}`);
-  res.json({ status: "ok", count: Object.keys(templates).length });
+  const valid = {};
+  Object.entries(templates).forEach(([k, v]) => {
+    if (isRealR307Template(v)) valid[k] = v;
+  });
+  if (Object.keys(valid).length < REQUIRED_FP_SAMPLES) {
+    return res.status(400).json({
+      status:  "error",
+      message: `Need ${REQUIRED_FP_SAMPLES} real R307 templates, got ${Object.keys(valid).length}`
+    });
+  }
+
+  templateStore[aadhaar] = valid;
+  fingerprintDB[aadhaar] = Object.values(valid);
+  console.log(`[TEMPLATES] Stored ${Object.keys(valid).length} R307 templates for ${aadhaar}`);
+  res.json({ status: "ok", count: Object.keys(valid).length });
 });
 
 // ===============================
@@ -364,16 +401,14 @@ app.get("/stm32/templates", (req, res) => {
 // ENROLL (REST push from STM32 or admin)
 // ===============================
 app.post("/stm32/enroll", (req, res) => {
-  const { voter_id, aadhaar, samples = 5 } = req.body || {};
+  const { voter_id, aadhaar } = req.body || {};
   const id = voter_id || aadhaar;
   if (!id) return res.status(400).json({ status: "error", message: "Missing voter_id" });
 
-  fingerprintDB[id] = Array.from({ length: samples },
-    (_, i) => `STM32_FP_${id}_${i}`);
-  enrollResults[id] = { status: "complete", ts: Date.now() };
-
-  console.log(`[ENROLL] /stm32/enroll — ${id} (${samples} samples)`);
-  res.json({ status: "success", id, samples });
+  return res.status(400).json({
+    status:  "error",
+    message: "Mock enroll disabled. Use POST /stm32/cmd-enroll for real R307 5-sample enrollment."
+  });
 });
 
 // ===============================
@@ -387,16 +422,9 @@ app.post("/stm32/verify", (req, res) => {
     return res.json({ status: "ok", received: line });
   }
 
-  const id = voter_id || aadhaar;
-  if (!id) return res.status(400).json({ status: "error", message: "Missing voter_id" });
-
-  matchResults[id] = { status: "verified", ts: Date.now() };
-  console.log(`[VERIFY] /stm32/verify — verified ${id}`);
-  res.json({
-    status:             "success",
-    id,
-    fingerprint_status: "verified",
-    message:            "Fingerprint Verified — Voting Enabled"
+  return res.status(400).json({
+    status:  "error",
+    message: "Auto-verify disabled. Use CMD_VERIFY + R307 Search (≥80% score) via /stm32/cmd-verify."
   });
 });
 
@@ -468,23 +496,45 @@ app.post("/stm32/cmd-enroll", (req, res) => {
 // CMD_VERIFY — load all 5 templates then trigger live verify
 // POST /stm32/cmd-verify  body: { aadhaar }
 // ===============================
-app.post("/stm32/cmd-verify", (req, res) => {
-  const { aadhaar } = req.body || {};
+app.post("/stm32/cmd-verify", async (req, res) => {
+  const { aadhaar, templates: bodyTemplates } = req.body || {};
   if (!aadhaar) return res.status(400).json({ status: "error", message: "Missing aadhaar" });
 
-  const templates = templateStore[aadhaar];
-  if (templates && Object.keys(templates).length > 0) {
-    // Send each stored template to STM32 for loading into memory
-    Object.entries(templates).forEach(([n, b64]) => {
-      sendToSTM32(`LOAD_TEMPLATE:${n}:${b64}`);
+  if (bodyTemplates && typeof bodyTemplates === "object") {
+    Object.entries(bodyTemplates).forEach(([k, v]) => {
+      if (isRealR307Template(v)) {
+        if (!templateStore[aadhaar]) templateStore[aadhaar] = {};
+        templateStore[aadhaar][k] = v;
+      }
     });
-    console.log(`[VERIFY] Loaded ${Object.keys(templates).length} templates for ${aadhaar}`);
-  } else {
-    console.log(`[VERIFY] No stored templates for ${aadhaar} — relying on STM32 internal flash`);
   }
 
+  const valid = getValidTemplates(aadhaar);
+  const loaded = Object.keys(valid).length;
+  if (loaded < REQUIRED_FP_SAMPLES) {
+    return res.status(400).json({
+      status:  "error",
+      message: `Need ${REQUIRED_FP_SAMPLES} enrolled R307 templates, found ${loaded}`
+    });
+  }
+
+  for (let n = 1; n <= REQUIRED_FP_SAMPLES; n++) {
+    const b64 = valid[String(n)] || valid[n];
+    if (!b64) {
+      return res.status(400).json({ status: "error", message: `Missing template ${n}` });
+    }
+    sendToSTM32(`LOAD_TEMPLATE:${n}:${b64}`);
+    await delay(80);
+  }
+  console.log(`[VERIFY] Loaded ${REQUIRED_FP_SAMPLES} R307 templates for ${aadhaar}`);
+
   sendToSTM32(`CMD_VERIFY:${aadhaar}`);
-  res.json({ status: "ok", command: `CMD_VERIFY:${aadhaar}`, templatesLoaded: templates ? Object.keys(templates).length : 0 });
+  res.json({
+    status:          "ok",
+    command:         `CMD_VERIFY:${aadhaar}`,
+    templatesLoaded: REQUIRED_FP_SAMPLES,
+    thresholdPct:    80
+  });
 });
 
 // ===============================
@@ -520,38 +570,28 @@ app.post("/fingerprint/store", (req, res) => {
 // POST /fingerprint/verify  body: { aadhaar, template? }
 // ===============================
 app.post("/fingerprint/verify", (req, res) => {
-  const { aadhaar, template } = req.body || {};
+  const { aadhaar } = req.body || {};
   if (!aadhaar) return res.json({ match: false, reason: "missing aadhaar" });
 
-  // If STM32 is connected use the UART-driven verify path
-  // (frontend already polls /stm32/match-status for the result)
-  // This REST endpoint is the software-fallback multi-template check.
-
-  const storedSamples = fingerprintDB[aadhaar];
-  const storedTemplates = templateStore[aadhaar];
-
-  // Multi-template fusion check: match against any of the 5 stored templates
-  let match = false;
-
-  if (storedTemplates && Object.keys(storedTemplates).length > 0) {
-    // Real base64 templates — check if live template matches any
-    match = Object.values(storedTemplates).some(t => t === template);
-    // For demo/mock templates that aren't real base64, use prefix heuristic
-    if (!match && template) {
-      match = template.startsWith("FP_") ||
-              template.startsWith("MOCK_FP_") ||
-              template.startsWith("STM32_FP_");
-    }
-  } else if (storedSamples && storedSamples.length > 0) {
-    match = storedSamples.includes(template) ||
-            (template && (
-              template.startsWith("FP_")      ||
-              template.startsWith("MOCK_FP_") ||
-              template.startsWith("STM32_FP_")
-            ));
+  if (stm32Connected) {
+    return res.json({
+      match:  false,
+      reason: "hardware_required",
+      message: "Use /stm32/cmd-verify for R307 verification with 80% threshold"
+    });
   }
 
-  res.json({ match, source: stm32Connected ? "hardware" : "software", templatesChecked: storedTemplates ? Object.keys(storedTemplates).length : (storedSamples ? storedSamples.length : 0) });
+  const storedTemplates = getValidTemplates(aadhaar);
+  const mockSamples = (fingerprintDB[aadhaar] || []).filter(
+    (s) => typeof s === "string" && s.startsWith("MOCK_FP_")
+  );
+  const match = mockSamples.length >= REQUIRED_FP_SAMPLES;
+
+  res.json({
+    match,
+    source:           "demo",
+    templatesChecked: Object.keys(storedTemplates).length || mockSamples.length
+  });
 });
 
 // ===============================

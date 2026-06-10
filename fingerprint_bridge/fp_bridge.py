@@ -90,6 +90,21 @@ _sample_consents: dict = {}  # { aadhaar: { n: "pending"|"approved"|"denied" } }
 _template_store:  dict = {}  # { aadhaar: { "1": base64, "2": base64, ... } }
 _enroll_results:  dict = {}  # { aadhaar: { "status": "complete"|"aborted", "ts": epoch } }
 
+REQUIRED_FP_SAMPLES = 5
+
+
+def _is_real_r307_template(tmpl: str) -> bool:
+    if not tmpl or not isinstance(tmpl, str):
+        return False
+    if tmpl.startswith(("MOCK_FP_", "STM32_FP_", "FP_", "PLACEHOLDER_")):
+        return False
+    return len(tmpl) >= 64 and re.fullmatch(r"[A-Za-z0-9+/=]+", tmpl) is not None
+
+
+def _valid_templates(aadhaar: str) -> dict:
+    stored = _template_store.get(aadhaar, {})
+    return {k: v for k, v in stored.items() if _is_real_r307_template(v)}
+
 # ==========================
 # UART write helper
 # ==========================
@@ -141,10 +156,13 @@ def parse_uart_line(line: str):
             if "DATA=" in line:
                 b64 = line.split("DATA=", 1)[1]
             if aadhaar and b64:
+                if not _is_real_r307_template(b64):
+                    print(f"[TEMPLATE] Rejected invalid template {n} for {aadhaar}")
+                    return
                 if aadhaar not in _template_store:
                     _template_store[aadhaar] = {}
                 _template_store[aadhaar][str(n)] = b64
-                print(f"[TEMPLATE] Stored template {n} for {aadhaar}")
+                print(f"[TEMPLATE] Stored R307 template {n} for {aadhaar}")
             return
 
         # ── ENROLL_OK  ─────────────────────────────────────────────────
@@ -154,18 +172,18 @@ def parse_uart_line(line: str):
             if not aadhaar:
                 return
 
-            # Persist all 5 templates (or synthetic placeholders) to Firestore
-            stored_tpls = _template_store.get(aadhaar, {})
-            fp_samples = list(stored_tpls.values()) if stored_tpls else [
-                f"STM32_FP_{aadhaar}_{i}" for i in range(samples)
-            ]
+            stored_tpls = _valid_templates(aadhaar)
+            fp_samples = list(stored_tpls.values())
 
             db.collection("VoterDB").document(aadhaar).set({
                 "fingerprint_status": "enrolled",
                 "fp_samples":         fp_samples,
-                "fp_sample_count":    samples,
+                "fp_templates":       stored_tpls,
+                "fp_sample_count":    len(fp_samples) or samples,
+                "fusion_mode":        "multi_template",
+                "match_threshold_pct": 80,
                 "enrolled_at":        firestore.SERVER_TIMESTAMP,
-                "hw_samples_count":   samples,
+                "hw_samples_count":   len(fp_samples) or samples,
                 "hw_enrolled_at":     firestore.SERVER_TIMESTAMP,
             }, merge=True)
 
@@ -455,25 +473,49 @@ def cmd_verify():
     if not aadhaar:
         return jsonify({"status": "error", "message": "Missing aadhaar"}), 400
 
-    templates = _template_store.get(aadhaar, {})
-    if not templates:
-        # Try Firestore
+    body_templates = data.get("templates") or {}
+    if body_templates:
+        for k, v in body_templates.items():
+            if _is_real_r307_template(v):
+                if aadhaar not in _template_store:
+                    _template_store[aadhaar] = {}
+                _template_store[aadhaar][str(k)] = v
+
+    templates = _valid_templates(aadhaar)
+    if len(templates) < REQUIRED_FP_SAMPLES:
         try:
             snap = db.collection("VoterDB").document(aadhaar).get()
             if snap.exists:
-                fp_samples = snap.to_dict().get("fp_samples", [])
-                if fp_samples:
-                    templates = {str(i+1): s for i, s in enumerate(fp_samples)}
+                fp_tpls = snap.to_dict().get("fp_templates", {})
+                for k, v in fp_tpls.items():
+                    if _is_real_r307_template(v):
+                        if aadhaar not in _template_store:
+                            _template_store[aadhaar] = {}
+                        _template_store[aadhaar][str(k)] = v
+                templates = _valid_templates(aadhaar)
         except Exception as e:
             print(f"[CMD_VERIFY] Firestore fetch error: {e}")
 
-    loaded = 0
-    for n, b64 in templates.items():
+    if len(templates) < REQUIRED_FP_SAMPLES:
+        return jsonify({
+            "status": "error",
+            "message": f"Need {REQUIRED_FP_SAMPLES} enrolled R307 templates, found {len(templates)}"
+        }), 400
+
+    for n in range(1, REQUIRED_FP_SAMPLES + 1):
+        b64 = templates.get(str(n))
+        if not b64:
+            return jsonify({"status": "error", "message": f"Missing template {n}"}), 400
         send_to_stm32(f"LOAD_TEMPLATE:{n}:{b64}")
-        loaded += 1
+        time.sleep(0.08)
 
     send_to_stm32(f"CMD_VERIFY:{aadhaar}")
-    return jsonify({"status": "ok", "command": f"CMD_VERIFY:{aadhaar}", "templatesLoaded": loaded})
+    return jsonify({
+        "status": "ok",
+        "command": f"CMD_VERIFY:{aadhaar}",
+        "templatesLoaded": REQUIRED_FP_SAMPLES,
+        "thresholdPct": 80
+    })
 
 
 # ==========================
@@ -492,24 +534,10 @@ def stm32_event():
 
 @app.route("/stm32/enroll", methods=["POST"])
 def stm32_enroll():
-    data    = request.json or {}
-    aadhaar = data.get("voter_id") or data.get("aadhaar")
-    samples = int(data.get("samples", 5))
-    if not aadhaar:
-        return jsonify({"status": "error", "message": "Missing voter_id"}), 400
-
-    fp_templates = [f"STM32_FP_{aadhaar}_{i}" for i in range(samples)]
-    db.collection("VoterDB").document(aadhaar).set({
-        "fingerprint_status": "enrolled",
-        "fp_samples":         fp_templates,
-        "fp_sample_count":    samples,
-        "enrolled_at":        firestore.SERVER_TIMESTAMP,
-        "hw_samples_count":   samples,
-        "hw_enrolled_at":     firestore.SERVER_TIMESTAMP,
-    }, merge=True)
-    _enroll_results[aadhaar] = {"status": "complete", "ts": time.time()}
-    print(f"[FIRESTORE] /stm32/enroll — Aadhaar {aadhaar}")
-    return jsonify({"status": "success", "id": aadhaar, "samples": samples})
+    return jsonify({
+        "status": "error",
+        "message": "Mock enroll disabled. Use POST /stm32/cmd-enroll for real R307 5-sample enrollment."
+    }), 400
 
 
 @app.route("/stm32/verify", methods=["POST"])
@@ -520,17 +548,10 @@ def stm32_verify():
         parse_uart_line(line)
         return jsonify({"status": "ok", "received": line})
 
-    aadhaar = data.get("voter_id") or data.get("aadhaar")
-    if not aadhaar:
-        return jsonify({"status": "error", "message": "Missing voter_id"}), 400
-
-    _handle_match_ok(aadhaar)
     return jsonify({
-        "status":             "success",
-        "id":                 aadhaar,
-        "fingerprint_status": "verified",
-        "message":            "Fingerprint Verified — Voting Enabled"
-    })
+        "status": "error",
+        "message": "Auto-verify disabled. Use CMD_VERIFY + R307 Search (≥80% score) via /stm32/cmd-verify."
+    }), 400
 
 
 @app.route("/stm32/match-status", methods=["GET"])

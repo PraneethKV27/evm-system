@@ -8,7 +8,10 @@ SecEVM is a secure, web-based Electronic Voting Machine built around an **R307 o
 
 | Feature | Detail |
 |---------|--------|
-| **Stability & error handling** | ESLint-clean Cloud Functions scaffold, graceful port-conflict messages on startup, safer Firestore vote transactions, and a bundled `fingerprint.svg` asset (no more missing-image 404s) |
+| **Phone-style biometric fusion** | Registration collects **5 real R307 scans** (different angles/pressures). All 5 CharBuffer templates are stored and treated as **one fused identity** — verification succeeds if **any** template matches at **≥ 80%** confidence, exactly like phone/laptop fingerprint sensors |
+| **Real-hardware-only enrollment** | Mock `/stm32/enroll` bypass removed. Hardware path waits for UART `TEMPLATE_N` base64 uploads from the sensor, polls `enroll-status` until `ENROLL_OK`, then saves all 5 templates to Firestore as `fp_templates` |
+| **80% verify gate enforced** | Voting unlocks only on STM32 `MATCH_OK` (R307 Search score ≥ 52428 / 80%). Scores below threshold return `REASON=SCORE_LOW` and keep the ballot locked |
+| **Stability & error handling** | ESLint-clean Cloud Functions scaffold, graceful port-conflict messages on startup, safer Firestore vote transactions, and a bundled `fingerprint.svg` asset |
 | **Per-sample consent** | Before saving each of the 5 fingerprint samples the voter sees a confirmation dialog: "Sample N captured — do you consent to saving this sample?" Yes proceeds; No aborts enrollment |
 | **Multi-template fusion** | All 5 CharBuffer templates (Tz1–Tz5) are base64-encoded and uploaded from the STM32 to the backend. At verification time all 5 are loaded back and the R307 Search scans all pages in one pass — identical to how phone fingerprint sensors work |
 | **80 % match threshold** | The R307 Search response includes a 16-bit confidence score (0–65535). SecEVM only accepts a match when the score is ≥ 52428 (80 % of max). A "found but weak" scan returns `REASON=SCORE_LOW` and is rejected with a clear UI message |
@@ -23,15 +26,16 @@ SecEVM is a secure, web-based Electronic Voting Machine built around an **R307 o
 ### 📥 Registration
 - Voter registration with 12-digit Aadhaar validation
 - Collects name, mobile, email, gender, date of birth; auto age calculation with 18+ check
-- **5-sample enrollment with per-sample consent** — each sample pauses and waits for the voter to tap Yes or No
-- All 5 CharBuffer templates base64-uploaded and fused into a single biometric identity
+- **5 real R307 scans with per-sample consent** — STM32 captures each sample, uploads base64 CharBuffer via UART (`TEMPLATE_1`…`TEMPLATE_5`), voter approves each before proceeding
+- **Phone-style fusion** — all 5 templates stored as `fp_templates` and searched as one identity at verify time (not 5 separate voters)
 - Saves voter record to Firebase Firestore (or `localStorage` in Demo Mode)
 
 ### 🗳️ Secure Voting
 - Aadhaar-based voter lookup with real-time pre-verification card
-- Biometric verification: all 5 stored templates loaded into STM32 via `LOAD_TEMPLATE`, then a single `CMD_VERIFY` triggers `Search` across all pages
-- **80 % confidence threshold enforced in firmware** — partial, rotated, or low-pressure scans below the threshold are rejected
-- Ballot unlocked only on `MATCH_OK` (score ≥ 80 %)
+- Requires **5 enrolled R307 templates** (`fp_templates`) before verify can start
+- Biometric verification: all 5 stored templates loaded into STM32 via `LOAD_TEMPLATE` (with inter-command delay), then `CMD_VERIFY` triggers R307 `Search` across all pages
+- **80 % confidence threshold enforced in firmware** — match score must be ≥ 52428 (80 % of 65535). Below that → `MATCH_FAIL:REASON=SCORE_LOW` and ballot stays locked
+- Ballot unlocked **only** on hardware `MATCH_OK` — no software auto-verify bypass
 - One-vote-per-voter enforced via Firestore atomic transaction
 
 ### 📊 Stats Dashboard
@@ -72,46 +76,54 @@ MATCH accepted: score=54210 (82.7%)
 
 ---
 
-## 🔄 Enrollment Protocol (Per-Sample Consent + Template Upload)
+## 🔄 Enrollment Protocol (5 Real R307 Scans → Phone-Style Fusion)
 
 ```
-PC sends CMD_ENROLL:<aadhaar>
-  For each sample n = 1..5:
-    STM32: GenImg → Img2Tz(slot1)
-    STM32 → PC:  SAMPLE_READY:ID=<aadhaar>:SAMPLE=<n>
-    PC pauses enrollment; frontend shows consent dialog
-      Voter clicks YES  → PC sends ACK_SAMPLE:<aadhaar>:<n>
-      Voter clicks NO   → PC sends ABORT_ENROLL:<aadhaar>  → stop
-    STM32: UpChar(slot1) → base64 encode
-    STM32 → PC:  TEMPLATE_<n>:ID=<aadhaar>:DATA=<base64>
-    PC stores template in memory + Firestore
+Frontend: POST /stm32/cmd-enroll  { aadhaar }
 
-  After 5 ACKs:
-    STM32: capture pair → RegModel → Store(page 1)
-    STM32 → PC:  ENROLL_OK:ID=<aadhaar>:SAMPLES=5
-    PC writes Firestore: { fp_samples:[...], fp_sample_count:5,
-                           fingerprint_status:"enrolled", enrolled_at:<ts> }
-    Frontend: shows ✅ enrollment completion banner
+For each sample n = 1..5:
+  STM32 (R307): GenImg → Img2Tz → SAMPLE_READY:ID=<aadhaar>:SAMPLE=<n>
+  Frontend polls /stm32/sample-consent → shows consent dialog
+    YES → POST /stm32/ack-sample  { aadhaar, sample: n }
+    NO  → POST /stm32/deny-sample → ABORT_ENROLL → stop
+  STM32: UpChar → base64 → TEMPLATE_<n>:ID=<aadhaar>:DATA=<base64>
+  Frontend polls /stm32/templates until real base64 for sample n arrives
+  (Placeholders and mock templates are rejected by the bridge)
+
+After all 5 samples consented:
+  STM32: final RegModel fuse → ENROLL_OK:ID=<aadhaar>:SAMPLES=5
+  Frontend polls /stm32/enroll-status until "complete"
+  Frontend: POST /stm32/store-templates  { aadhaar, templates: {1..5} }
+  Firestore: { fp_templates:{1..5}, fp_sample_count:5, fusion_mode:"multi_template",
+               match_threshold_pct:80, fingerprint_status:"enrolled" }
+  Frontend: shows ✅ enrollment completion banner
 ```
 
 ---
 
-## 🔄 Verification Protocol (Multi-Template Fusion)
+## 🔄 Verification Protocol (Multi-Template Fusion + 80% Gate)
 
 ```
-PC: fetch all 5 templates from Firestore for <aadhaar>
-PC → STM32:  LOAD_TEMPLATE:1:<base64>
-             LOAD_TEMPLATE:2:<base64>
-             ...
-             LOAD_TEMPLATE:5:<base64>
-  (Each: STM32 decodes base64 → DnChar into slot1 → Store at page n)
-PC → STM32:  CMD_VERIFY:<aadhaar>
-  STM32: GenImg → Img2Tz(slot1) → Search(pages 0..9)
-  STM32 reads 16-byte Search response:
-    score ≥ 80% → MATCH_OK ID=<aadhaar>
-    score <  80% → MATCH_FAIL ID=<aadhaar>:REASON=SCORE_LOW
-    not found    → MATCH_FAIL ID=<aadhaar>:REASON=MISMATCH
-PC/frontend: polls /stm32/match-status → updates ballot lock
+Frontend: voter must have fp_templates with 5 real R307 base64 blobs
+
+Frontend: POST /stm32/cmd-verify  { aadhaar, templates: fp_templates }
+Bridge validates 5 real templates, then:
+  PC → STM32:  LOAD_TEMPLATE:1:<base64>  (80ms delay between each)
+               LOAD_TEMPLATE:2:<base64>
+               ...
+               LOAD_TEMPLATE:5:<base64>
+  PC → STM32:  CMD_VERIFY:<aadhaar>
+
+Voter places finger on R307:
+  STM32: GenImg → Img2Tz → Search(pages 0..9)
+  R307 Search score (0..65535):
+    score ≥ 52428 (80%) → MATCH_OK ID=<aadhaar>  → ballot UNLOCKED
+    score <  52428       → MATCH_FAIL:REASON=SCORE_LOW  → ballot LOCKED
+    not found            → MATCH_FAIL:REASON=MISMATCH   → ballot LOCKED
+
+Frontend polls /stm32/match-status?aadhaar=  (up to 15s)
+  "verified" → enable EVM ballot buttons
+  "failed"   → show score-low or mismatch message
 ```
 
 ---
@@ -370,6 +382,13 @@ USART1 (R307): 57600 baud — USART2 (PC bridge): 115200 baud
 | `app.js` | Vote transaction crashed if `PartyDB` doc missing | Creates party doc on first vote if absent |
 | `app.js` | `fingerprint.png` referenced but file missing | Replaced with bundled `fingerprint.svg` |
 | `app.js` | Null dereference in Aadhaar pre-verify reset | Added null checks for `verifyFpSensor` / `fpLiveStatus` |
+| `app.js` | Enrollment used `/fingerprint/capture` mock instead of UART `TEMPLATE_N` | Waits for real R307 base64 per sample + `enroll-status` poll |
+| `app.js` | HW enroll button called mock `/stm32/enroll` | Redirected to real `cmd-enroll` flow via `startEnrollment()` |
+| `app.js` | Vote verify called `/stm32/verify` auto-pass after match | Removed — only UART `MATCH_OK` unlocks ballot |
+| `server.js` | Mock `/stm32/enroll` and `/stm32/verify` bypassed real R307 | Disabled — hardware path required |
+| `server.js` | `cmd-verify` sent templates without validation or delay | Requires 5 real templates, 80ms delay between `LOAD_TEMPLATE` |
+| `main.c` | CharBuffer upload failure sent `PLACEHOLDER_*` templates | Enrollment aborts on upload failure |
+| `main.c` | `LOAD_TEMPLATE` accepted placeholder strings | Rejects invalid/placeholder base64 |
 
 ---
 
@@ -388,8 +407,10 @@ USART1 (R307): 57600 baud — USART2 (PC bridge): 115200 baud
 
 ## Demo Mode
 
-All features work without an STM32 connected:
+All features work without an STM32 connected (for testing UI only):
 - Consent dialogs auto-approve after 3 seconds
 - Templates stored as `MOCK_FP_<aadhaar>_<n>_<random>` placeholders
-- Verification auto-succeeds for registered eligible voters
+- Verification auto-succeeds for registered eligible voters (no 80% score — demo only)
 - Hardware badge shows 🟡 `STM32: Not Connected`
+
+> **Production voting requires STM32 + R307 hardware.** Demo Mode does not enforce the 80% biometric threshold.

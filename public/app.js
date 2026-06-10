@@ -312,83 +312,87 @@ async function checkBridgeStatus() {
   }
 }
 
-// ================= STM32 Hardware Fingerprint Enrollment =================
-// Called when admin clicks "Enroll Fingerprint (HW)" button.
-// Calls the Flask bridge /stm32/enroll endpoint which signals the STM32
-// to begin enrollment and returns the result from Firestore.
-window.checkFingerprint = async function () {
-  const aadhaar  = document.getElementById("aadhaar").value.trim();
-  const name     = document.getElementById("name").value.trim();
-  const btn      = document.getElementById("hwEnrollBtn");
-  const fpSensor = document.getElementById("enrollFpSensor");
+const REQUIRED_FP_SAMPLES = 5;
+const MATCH_THRESHOLD_PCT = 80;
 
-  // Validate Aadhaar first
-  if (!aadhaar || !/^\d{12}$/.test(aadhaar)) {
-    showStatus("fpStatus", "Enter a valid 12-digit Aadhaar before hardware enroll ❌", "error");
-    return;
+// Real R307 CharBuffer templates are base64 blobs from the sensor — not mock prefixes
+function isRealR307Template(tmpl) {
+  if (!tmpl || typeof tmpl !== "string") return false;
+  if (/^(MOCK_FP_|STM32_FP_|FP_|PLACEHOLDER_)/.test(tmpl)) return false;
+  return tmpl.length >= 64 && /^[A-Za-z0-9+/=]+$/.test(tmpl);
+}
+
+function countRealTemplates(templatesObj) {
+  if (!templatesObj) return 0;
+  return Object.values(templatesObj).filter(isRealR307Template).length;
+}
+
+async function pollUntil(timeoutMs, intervalMs, checkFn) {
+  let elapsed = 0;
+  while (elapsed < timeoutMs) {
+    const result = await checkFn();
+    if (result) return result;
+    await new Promise(r => setTimeout(r, intervalMs));
+    elapsed += intervalMs;
   }
-  if (!name) {
-    showStatus("fpStatus", "Enter voter name before hardware enroll ❌", "error");
-    return;
-  }
+  return null;
+}
 
-  // Visual feedback — start
-  if (btn) { btn.disabled = true; btn.innerText = "⏳ Enrolling..."; }
-  fpSensor.className = "fp-sensor scanning";
-  showStatus("fpStatus", "Sending enroll command to STM32 hardware... 🔌", "working");
-
+async function fetchStoredTemplates(aadhaar) {
   try {
-    const response = await fetch("http://127.0.0.1:5002/stm32/enroll", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ voter_id: aadhaar, samples: 5 })
-    });
-
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-    const data = await response.json();
-
-    if (data.status === "success") {
-      fpSensor.className = "fp-sensor success";
-      showStatus("fpStatus", `✔ Fingerprint enrolled for ID: ${data.id} (${data.samples} samples)`, "success");
-
-      // Illuminate all 5 progress dots
-      updateSampleDots(5, 5);
-
-      // Update Firestore record with hw enrollment flag if in Firebase mode
-      if (isFirebaseMode) {
-        try {
-          await setDoc(doc(db, "VoterDB", aadhaar), {
-            fingerprint_status: "enrolled",
-            hw_enrolled: true
-          }, { merge: true });
-        } catch (fsErr) {
-          console.warn("[EVM] Firestore hw_enrolled merge failed:", fsErr);
-        }
-      }
-
-      // Refresh registered voters table if it's open
-      if (typeof startRegisteredListener === "function") startRegisteredListener();
-
-    } else {
-      fpSensor.className = "fp-sensor error";
-      showStatus("fpStatus", `Hardware enrollment failed: ${data.message || "Unknown error"} ❌`, "error");
-    }
-
-  } catch (err) {
-    fpSensor.className = "fp-sensor error";
-
-    // Bridge not running — show a clear message instead of a raw error
-    if (err instanceof TypeError || err.message.includes("fetch")) {
-      showStatus("fpStatus", "STM32 bridge offline — start fp_bridge.py first ❌", "error");
-    } else {
-      showStatus("fpStatus", `Hardware error: ${err.message} ❌`, "error");
-    }
-    console.error("[HW ENROLL]", err);
-
-  } finally {
-    if (btn) { btn.disabled = false; btn.innerText = "🔌 Enroll Fingerprint (HW)"; }
+    const res  = await fetch(`http://127.0.0.1:5002/stm32/templates?aadhaar=${aadhaar}`);
+    const data = await res.json();
+    return data.found ? data.templates : null;
+  } catch (_) {
+    return null;
   }
+}
+
+async function waitForSampleReady(aadhaar, sampleIndex) {
+  return pollUntil(30000, 500, async () => {
+    try {
+      const res  = await fetch(
+        `http://127.0.0.1:5002/stm32/sample-consent?aadhaar=${aadhaar}&sample=${sampleIndex}`
+      );
+      const data = await res.json();
+      return data.status === "pending" ? true : null;
+    } catch (_) {
+      return null;
+    }
+  });
+}
+
+async function waitForR307Template(aadhaar, sampleIndex) {
+  return pollUntil(45000, 500, async () => {
+    const templates = await fetchStoredTemplates(aadhaar);
+    const tmpl = templates && templates[String(sampleIndex)];
+    return isRealR307Template(tmpl) ? tmpl : null;
+  });
+}
+
+async function waitForEnrollComplete(aadhaar) {
+  return pollUntil(120000, 1000, async () => {
+    try {
+      const res  = await fetch(`http://127.0.0.1:5002/stm32/enroll-status?aadhaar=${aadhaar}`);
+      const data = await res.json();
+      if (data.status === "complete") return "complete";
+      if (data.status === "aborted") return "aborted";
+      return null;
+    } catch (_) {
+      return null;
+    }
+  });
+}
+
+// ================= STM32 Hardware Fingerprint Enrollment =================
+// HW button uses the same real R307 5-sample + consent flow as startEnrollment().
+window.checkFingerprint = async function () {
+  const { bridge, hardware } = await checkBridgeStatus();
+  if (!bridge || !hardware) {
+    showStatus("fpStatus", "Connect STM32 + R307 sensor, then use Capture Fingerprint ❌", "error");
+    return;
+  }
+  await window.startEnrollment();
 };
 
 // ================= Tab Navigation =================
@@ -599,70 +603,30 @@ window.startEnrollment = async function () {
     } catch (_) { /* non-critical */ }
   }
 
-  // ── Sample-by-sample loop with per-sample consent ──────────────
+  // ── Sample-by-sample loop: R307 capture → consent → real template upload ──
+  let fpTemplates = {};
+
   for (let sampleIndex = 1; sampleIndex <= totalSamples; sampleIndex++) {
 
-    showStatus("fpStatus", `Waiting for sample ${sampleIndex}/${totalSamples} from STM32...`, "working");
-
-    let templateStr = "";
-
     if (!isDemoMode) {
-      // Poll until STM32 sends SAMPLE_READY for this sample (up to 30 s)
-      const READY_TIMEOUT  = 30000;
-      const READY_INTERVAL = 500;
-      let readyElapsed     = 0;
-      let sampleReady      = false;
-
-      while (readyElapsed < READY_TIMEOUT) {
-        try {
-          const res  = await fetch(
-            `http://127.0.0.1:5002/stm32/sample-consent?aadhaar=${aadhaar}&sample=${sampleIndex}`
-          );
-          const data = await res.json();
-          if (data.status === "pending" || data.status === "approved") {
-            sampleReady = true;
-            break;
-          }
-        } catch (_) { /* keep polling */ }
-        await new Promise(r => setTimeout(r, READY_INTERVAL));
-        readyElapsed += READY_INTERVAL;
-      }
-
-      if (!sampleReady) {
+      showStatus("fpStatus", `Place finger on R307 sensor — sample ${sampleIndex}/${totalSamples}...`, "working");
+      const ready = await waitForSampleReady(aadhaar, sampleIndex);
+      if (!ready) {
         fpSensor.className = "fp-sensor error";
-        showStatus("fpStatus", `Timeout waiting for sample ${sampleIndex} from STM32 ❌`, "error");
+        showStatus("fpStatus", `Timeout waiting for R307 sample ${sampleIndex} ❌`, "error");
         return;
       }
-
-      // Fetch the template captured for this sample
-      try {
-        const res  = await fetch("http://127.0.0.1:5002/fingerprint/capture", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ aadhaar })
-        });
-        const data = await res.json();
-        templateStr = data.template;
-      } catch (_) {
-        templateStr = `STM32_FP_${aadhaar}_${sampleIndex}`;
-      }
-
     } else {
-      // Demo mode: simulate a short capture delay
       await new Promise(r => setTimeout(r, 600));
-      templateStr = `MOCK_FP_${aadhaar}_${sampleIndex}_${Math.random().toString(36).slice(2,6).toUpperCase()}`;
     }
 
-    // ── Show per-sample consent dialog ──────────────────────────
-    showStatus("fpStatus", `Sample ${sampleIndex} ready — asking voter for consent...`, "working");
+    showStatus("fpStatus", `Sample ${sampleIndex} captured — asking voter for consent...`, "working");
     const approved = await showSampleConsentDialog(sampleIndex, isDemoMode);
 
     if (!approved) {
-      // Voter denied — abort enrollment
       fpSensor.className = "fp-sensor error";
       showStatus("fpStatus", `Enrollment aborted at sample ${sampleIndex} — voter declined ❌`, "error");
       updateSampleDots(sampleIndex - 1, totalSamples);
-
       if (!isDemoMode) {
         fetch("http://127.0.0.1:5002/stm32/deny-sample", {
           method: "POST",
@@ -673,24 +637,76 @@ window.startEnrollment = async function () {
       return;
     }
 
-    // Voter approved — tell STM32 to proceed
+    let templateStr = "";
+
     if (!isDemoMode) {
-      fetch("http://127.0.0.1:5002/stm32/ack-sample", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aadhaar, sample: sampleIndex })
-      }).catch(() => {});
+      try {
+        await fetch("http://127.0.0.1:5002/stm32/ack-sample", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ aadhaar, sample: sampleIndex })
+        });
+      } catch (_) {
+        fpSensor.className = "fp-sensor error";
+        showStatus("fpStatus", `Failed to ACK sample ${sampleIndex} to STM32 ❌`, "error");
+        return;
+      }
+
+      showStatus("fpStatus", `Uploading R307 template ${sampleIndex} from sensor...`, "working");
+      templateStr = await waitForR307Template(aadhaar, sampleIndex);
+      if (!templateStr) {
+        fpSensor.className = "fp-sensor error";
+        showStatus("fpStatus", `R307 template ${sampleIndex} not received from sensor ❌`, "error");
+        return;
+      }
+      fpTemplates[String(sampleIndex)] = templateStr;
+    } else {
+      templateStr = `MOCK_FP_${aadhaar}_${sampleIndex}_${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+      fpTemplates[String(sampleIndex)] = templateStr;
     }
 
     registrationSamples.push(templateStr);
     updateSampleDots(sampleIndex, totalSamples);
     addFpSampleToGallery(sampleIndex);
-    showStatus("fpStatus", `Sample ${sampleIndex}/${totalSamples} consented & saved ✔`, "working");
+    showStatus("fpStatus", `Sample ${sampleIndex}/${totalSamples} consented & stored ✔`, "working");
   }
 
-  // ── All 5 samples consented — fuse and save ─────────────────────
+  // ── Hardware: wait for STM32 to fuse all 5 into sensor memory ──
+  if (!isDemoMode) {
+    showStatus("fpStatus", "All 5 samples approved — fusing biometric identity on R307...", "working");
+    const enrollState = await waitForEnrollComplete(aadhaar);
+    if (enrollState === "aborted") {
+      fpSensor.className = "fp-sensor error";
+      showStatus("fpStatus", "Enrollment aborted by hardware ❌", "error");
+      return;
+    }
+    if (enrollState !== "complete") {
+      fpSensor.className = "fp-sensor error";
+      showStatus("fpStatus", "Enrollment fusion timed out — check STM32 connection ❌", "error");
+      return;
+    }
+
+    const storedTemplates = await fetchStoredTemplates(aadhaar);
+    if (countRealTemplates(storedTemplates) < REQUIRED_FP_SAMPLES) {
+      fpSensor.className = "fp-sensor error";
+      showStatus("fpStatus", `Only ${countRealTemplates(storedTemplates)}/5 R307 templates stored ❌`, "error");
+      return;
+    }
+    fpTemplates = storedTemplates;
+
+    try {
+      await fetch("http://127.0.0.1:5002/stm32/store-templates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aadhaar, templates: fpTemplates })
+      });
+    } catch (err) {
+      console.error("store-templates failed", err);
+    }
+  }
+
   fpSensor.className = "fp-sensor success";
-  showStatus("fpStatus", "All 5 samples approved — fusing biometric identity...", "working");
+  showStatus("fpStatus", "5 R307 samples fused into one biometric identity (phone-style) ✔", "working");
 
   const voterPayload = {
     aadhaar,
@@ -701,7 +717,10 @@ window.startEnrollment = async function () {
     mobile:             document.getElementById("mobile").value.trim(),
     email:              document.getElementById("email").value.trim(),
     fp_samples:         registrationSamples,
-    fp_sample_count:    5,
+    fp_templates:       fpTemplates,
+    fp_sample_count:    REQUIRED_FP_SAMPLES,
+    fusion_mode:        "multi_template",
+    match_threshold_pct: MATCH_THRESHOLD_PCT,
     fingerprint_status: "enrolled",
     enrolled_at:        new Date().toISOString(),
     flag:               0,
@@ -713,17 +732,13 @@ window.startEnrollment = async function () {
   try {
     if (isFirebaseMode) {
       await setDoc(doc(db, "VoterDB", aadhaar), voterPayload);
-      await fetch("http://127.0.0.1:5002/fingerprint/store", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aadhaar, samples: registrationSamples })
-      });
-      // Inform STM32 about the new voter
-      fetch("http://127.0.0.1:5002/stm32/send-voter-info", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aadhaar, name: voterPayload.name, age: voterPayload.age, gender: voterPayload.gender })
-      }).catch(() => {});
+      if (!isDemoMode) {
+        fetch("http://127.0.0.1:5002/stm32/send-voter-info", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ aadhaar, name: voterPayload.name, age: voterPayload.age, gender: voterPayload.gender })
+        }).catch(() => {});
+      }
     } else {
       await mockDB.setVoter(aadhaar, voterPayload);
     }
@@ -833,15 +848,37 @@ window.startFingerprintCheck = async function () {
   let pollResult_raw;
 
   if (isHardwareMode) {
+    const voterTemplates = voter.fp_templates || null;
+    const templateCount  = countRealTemplates(voterTemplates);
+
+    if (templateCount < REQUIRED_FP_SAMPLES) {
+      fpSensor.className = "fp-sensor error";
+      showStatus("fpLiveStatus", `Voter has only ${templateCount}/5 enrolled R307 templates — re-enroll ❌`, "error");
+      if (compPanel) compPanel.style.display = "none";
+      return;
+    }
+
     try {
-      await fetch("http://127.0.0.1:5002/stm32/cmd-verify", {
+      const verifyRes = await fetch("http://127.0.0.1:5002/stm32/cmd-verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aadhaar })
+        body: JSON.stringify({ aadhaar, templates: voterTemplates })
       });
-    } catch (_) { /* non-critical */ }
+      const verifyData = await verifyRes.json();
+      if (!verifyRes.ok) {
+        fpSensor.className = "fp-sensor error";
+        showStatus("fpLiveStatus", verifyData.message || "Cannot start R307 verify — templates missing ❌", "error");
+        if (compPanel) compPanel.style.display = "none";
+        return;
+      }
+    } catch (_) {
+      fpSensor.className = "fp-sensor error";
+      showStatus("fpLiveStatus", "Lost connection to fingerprint server ❌", "error");
+      if (compPanel) compPanel.style.display = "none";
+      return;
+    }
 
-    showStatus("fpLiveStatus", "Scanning on STM32 (checking all 5 fused templates)... 🔌", "working");
+    showStatus("fpLiveStatus", `Place finger on R307 — matching against all 5 templates (≥${MATCH_THRESHOLD_PCT}% required)... 🔌`, "working");
 
     const POLL_INTERVAL = 1000;
     const POLL_TIMEOUT  = 15000;
@@ -895,13 +932,6 @@ window.startFingerprintCheck = async function () {
       liveImg.style.opacity = "1";
       liveImg.style.filter  = "hue-rotate(180deg) brightness(1.2)";
     }
-
-    // Update Firestore fingerprint_status
-    fetch("http://127.0.0.1:5002/stm32/verify", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ voter_id: aadhaar })
-    }).catch(() => {});
 
     if (isFirebaseMode) {
       setDoc(doc(db, "VoterDB", aadhaar), {
