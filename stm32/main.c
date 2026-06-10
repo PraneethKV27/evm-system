@@ -46,7 +46,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdarg.h>
 
 /* ─────────────────────────────────────────────────────────────
    UART handles
@@ -105,10 +104,8 @@ static const uint8_t CMD_DN_CHAR[]   = {0xEF,0x01,0xFF,0xFF,0xFF,0xFF,
 typedef enum {
     STATE_IDLE = 0,
     STATE_ENTER_AADHAAR,
-    STATE_WAIT_CONSENT,    /* waiting for ACK_SAMPLE or ABORT_ENROLL from PC */
     STATE_ENROLLING,
-    STATE_VERIFY,
-    STATE_DONE
+    STATE_VERIFY
 } SystemState;
 
 static SystemState sysState = STATE_IDLE;
@@ -135,7 +132,6 @@ static uint8_t rxLineReady = 0;
 static char voterName[64]   = "";
 static char voterAge[4]     = "";
 static char voterGender[12] = "";
-static char voterParty[8]   = "";
 
 /* ─────────────────────────────────────────────────────────────
    Prototypes
@@ -159,7 +155,6 @@ static void     Base64Encode(const uint8_t *in, uint16_t inLen, char *out);
 static uint16_t Base64Decode(const char *in, uint8_t *out);
 
 static void     Debug_Print(const char *msg);
-static void     Debug_Printf(const char *fmt, ...);
 static void     SendToPC(const char *msg);
 
 static void     LED_Green_On(void);
@@ -328,14 +323,19 @@ static uint8_t R307_Enroll(const char *aadhaar)
         Debug_Print(msg);
         Buzzer_Beep();
 
-        /* Step 1: capture → convert */
-        uint8_t code = R307_CaptureAndConvert(1);
-        if (code != 0x00) {
+        /* Step 1: capture → convert (max 3 retries per sample) */
+        uint8_t code = 0xFF;
+        uint8_t retries = 0;
+        while (retries < 3) {
+            code = R307_CaptureAndConvert(1);
+            if (code == 0x00) break;
             Debug_Print("Capture failed — retrying\r\n");
-            sample--;
-            if (sample < 0) sample = 0;
+            retries++;
             HAL_Delay(1000);
-            continue;
+        }
+        if (code != 0x00) {
+            Debug_Print("Sample capture failed after 3 retries\r\n");
+            return code;
         }
 
         LED_Green_On(); HAL_Delay(300); LED_Green_Off();
@@ -500,11 +500,15 @@ static uint8_t R307_Verify(const char *aadhaar)
     }
 
     /* Score ≥ 80% — accepted */
-    char okMsg[48];
+    /* Avoid float printf — not supported by newlib-nano without linker flags.
+       Compute percentage as integer tenths: e.g. 82.7% → 827 tenths */
+    uint32_t pct_tenths = ((uint32_t)matchScore * 1000U) / 65535U;  /* 0..1000 */
+    uint32_t pct_int    = pct_tenths / 10U;
+    uint32_t pct_frac   = pct_tenths % 10U;
+    char okMsg[56];
     snprintf(okMsg, sizeof(okMsg),
-             "MATCH accepted: score=%u (%.1f%%)\r\n",
-             (unsigned)matchScore,
-             (float)matchScore / 65535.0f * 100.0f);
+             "MATCH accepted: score=%u (%u.%u%%)\r\n",
+             (unsigned)matchScore, (unsigned)pct_int, (unsigned)pct_frac);
     Debug_Print(okMsg);
     return 0x00;
 }
@@ -556,26 +560,26 @@ static void ProcessRxLine(const char *line)
 
         if (rawLen == 0) {
             /* Placeholder or invalid — skip actual sensor write but count it */
-            char logMsg[48];
-            snprintf(logMsg, sizeof(logMsg), "Template %d: placeholder, skip write\r\n", page);
-            Debug_Print(logMsg);
+            char loadLogMsg[48];
+            snprintf(loadLogMsg, sizeof(loadLogMsg), "Template %d: placeholder, skip write\r\n", page);
+            Debug_Print(loadLogMsg);
         } else {
             /* Download into CharBuffer1, then Store at page `page` */
             uint8_t code = R307_DownloadCharBuffer(rawBuf, rawLen);
             if (code == 0x00) {
                 code = R307_StorePage((uint8_t)page);
                 if (code != 0x00) {
-                    char logMsg[48];
-                    snprintf(logMsg, sizeof(logMsg), "Store page %d failed: 0x%02X\r\n", page, code);
-                    Debug_Print(logMsg);
+                    char storeErrMsg[48];
+                    snprintf(storeErrMsg, sizeof(storeErrMsg), "Store page %d failed: 0x%02X\r\n", page, code);
+                    Debug_Print(storeErrMsg);
                 }
             }
         }
 
         if (loadedCount < MAX_TEMPLATES) loadedCount++;
-        char logMsg[48];
-        snprintf(logMsg, sizeof(logMsg), "Loaded template %d (%u bytes)\r\n", page, (unsigned)rawLen);
-        Debug_Print(logMsg);
+        char loadDoneMsg[48];
+        snprintf(loadDoneMsg, sizeof(loadDoneMsg), "Loaded template %d (%u bytes)\r\n", page, (unsigned)rawLen);
+        Debug_Print(loadDoneMsg);
         return;
     }
 
@@ -605,9 +609,14 @@ static void ProcessRxLine(const char *line)
         char buf[64];
         strncpy(buf, line + 9, sizeof(buf) - 1);
         char *a = strtok(buf, ":");
+        /* party token parsed but only used for debug log below */
         char *p = strtok(NULL, ":");
         if (a) strncpy(currentAadhaar, a, AADHAAR_LEN);
-        if (p) strncpy(voterParty, p, sizeof(voterParty) - 1);
+        if (p) {
+            char ackMsg[48];
+            snprintf(ackMsg, sizeof(ackMsg), "Vote ack: %s\r\n", p);
+            Debug_Print(ackMsg);
+        }
         LED_Green_On(); Buzzer_Beep(); HAL_Delay(500); LED_Green_Off();
         return;
     }
@@ -887,16 +896,6 @@ static void Buzzer_BeepLong(void) {
 static void Debug_Print(const char *msg)
 {
     HAL_UART_Transmit(&huart2, (uint8_t *)msg, (uint16_t)strlen(msg), HAL_MAX_DELAY);
-}
-
-static void Debug_Printf(const char *fmt, ...)
-{
-    char buf[128];
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, args);
-    va_end(args);
-    Debug_Print(buf);
 }
 
 static void SendToPC(const char *msg)

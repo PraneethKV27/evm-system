@@ -330,12 +330,21 @@ USART1 (R307): 57600 baud — USART2 (PC bridge): 115200 baud
 
 | File | Issue | Fix |
 |------|-------|-----|
+| `main.c` | `%.1f` float format in `snprintf` — unsupported by newlib-nano on ARM without linker flags | Replaced with integer arithmetic: `(score × 1000) / 65535` → `int.frac%` |
+| `main.c` | `Debug_Printf` (varargs) left in firmware, triggering unused-function warning and pulling in `stdarg.h` / `vsnprintf` | Removed implementation and `#include <stdarg.h>` |
 | `main.c` | R307 Search response read from wrong UART (`huart2`) | Fixed to `huart1` |
 | `main.c` | No confidence threshold — any `0x00` confirmation accepted | 80% score gate added |
+| `main.c` | Infinite capture retry loop — could hang MCU | Max 3 retries per sample |
+| `main.c` | `voterParty` static buffer unused after write | Removed, replaced with inline log |
+| `main.c` | Duplicate `logMsg` declarations in same scope in `ProcessRxLine` | Renamed to `loadLogMsg`, `storeErrMsg`, `loadDoneMsg` |
 | `server.js` | UART key=value parser split on all `=`, broke base64 values | Split only on first `=` |
 | `server.js` | Serial `data` event processed per chunk not per line | `_uartBuffer` accumulator added |
 | `app.js` | Enrollment used `setInterval` — no pause between samples | Replaced with `async for` loop + consent dialog |
+| `app.js` | `vote()` checked `verifiedVoterData.aadhaar` — field absent when doc ID is the aadhaar | Falls back to `.id` |
+| `app.js` | `filterRegisteredTable` updated summary counts to reflect search results | Summary always reflects full dataset |
+| `app.js` | Demo Mode verification was hard-blocked by STM32 required check | Demo path added: 2s simulated scan, passes if voter has `fp_samples` |
 | `fp_bridge.py` | `MATCH_FAIL` reason not stored in Firestore | `last_verify_reason` field added |
+| `fp_bridge.py` | Unused `import base64` | Removed |
 | `serve.js` | No path sanitization | `path.resolve` + boundary check added |
 
 ---

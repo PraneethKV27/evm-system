@@ -767,21 +767,19 @@ window.startFingerprintCheck = async function () {
     return;
   }
 
-  // ── STM32 REQUIRED CHECK ──────────────────────────────────────
+  // Check hardware status — determine if we go hardware or demo path
   const { bridge, hardware } = await checkBridgeStatus();
-  if (!bridge || !hardware) {
+  const isHardwareMode = bridge && hardware;
+
+  // Hardware mode: STM32 must be connected
+  if (!isHardwareMode && bridge && !hardware) {
+    // Bridge is running but STM32 not plugged in — hard block
     fpSensor.className = "fp-sensor error";
-    showStatus("fpLiveStatus",
-      !bridge
-        ? "Fingerprint server not running. Start server first ❌"
-        : "STM32 not connected. Connect hardware to verify fingerprint ❌",
-      "error"
-    );
-    // Hide ballot — cannot proceed without hardware
+    showStatus("fpLiveStatus", "STM32 not connected. Connect hardware to verify fingerprint ❌", "error");
     setBallotLocked(true);
     return;
   }
-  // ─────────────────────────────────────────────────────────────
+  // If bridge is not running at all → Demo Mode (fall through)
 
   liveScanVerified = false;
   verifiedVoterData = null;
@@ -828,38 +826,51 @@ window.startFingerprintCheck = async function () {
     return;
   }
 
-  // Trigger STM32 to start multi-template verify:
-  // The server loads all 5 stored templates via LOAD_TEMPLATE before CMD_VERIFY
-  try {
-    await fetch("http://127.0.0.1:5002/stm32/cmd-verify", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ aadhaar })
+  // ── Hardware path: load templates then trigger CMD_VERIFY ──────
+  // ── Demo path (no bridge): 2s simulated scan then auto-verify ───
+  let pollResult_raw;
+
+  if (isHardwareMode) {
+    try {
+      await fetch("http://127.0.0.1:5002/stm32/cmd-verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ aadhaar })
+      });
+    } catch (_) { /* non-critical */ }
+
+    showStatus("fpLiveStatus", "Scanning on STM32 (checking all 5 fused templates)... 🔌", "working");
+
+    const POLL_INTERVAL = 1000;
+    const POLL_TIMEOUT  = 15000;
+    let elapsed = 0;
+
+    pollResult_raw = await new Promise((resolve) => {
+      const timer = setInterval(async () => {
+        elapsed += POLL_INTERVAL;
+        try {
+          const res  = await fetch(`http://127.0.0.1:5002/stm32/match-status?aadhaar=${aadhaar}`);
+          const data = await res.json();
+          if (data.status === "verified") { clearInterval(timer); resolve({ result: "verified", reason: null }); }
+          else if (data.status === "failed") { clearInterval(timer); resolve({ result: "failed", reason: data.reason || null }); }
+          else if (elapsed >= POLL_TIMEOUT)  { clearInterval(timer); resolve({ result: "timeout", reason: null }); }
+        } catch (_) {
+          clearInterval(timer);
+          resolve({ result: "error", reason: null });
+        }
+      }, POLL_INTERVAL);
     });
-  } catch (_) { /* non-critical — STM32 may already be scanning */ }
 
-  showStatus("fpLiveStatus", "Scanning on STM32 (checking all 5 fused templates)... 🔌", "working");
-
-  // Poll /stm32/match-status — wait up to 15s for MATCH_OK / MATCH_FAIL from STM32
-  const POLL_INTERVAL = 1000;
-  const POLL_TIMEOUT  = 15000;
-  let elapsed = 0;
-
-  const pollResult_raw = await new Promise((resolve) => {
-    const timer = setInterval(async () => {
-      elapsed += POLL_INTERVAL;
-      try {
-        const res  = await fetch(`http://127.0.0.1:5002/stm32/match-status?aadhaar=${aadhaar}`);
-        const data = await res.json();
-        if (data.status === "verified") { clearInterval(timer); resolve({ result: "verified", reason: null }); }
-        else if (data.status === "failed") { clearInterval(timer); resolve({ result: "failed", reason: data.reason || null }); }
-        else if (elapsed >= POLL_TIMEOUT)  { clearInterval(timer); resolve({ result: "timeout", reason: null }); }
-      } catch (_) {
-        clearInterval(timer);
-        resolve({ result: "error", reason: null });
-      }
-    }, POLL_INTERVAL);
-  });
+  } else {
+    // Demo Mode — simulate a 2 second biometric scan
+    showStatus("fpLiveStatus", "Demo Mode — simulating biometric scan... 👆", "working");
+    await new Promise(r => setTimeout(r, 2000));
+    // Pass if voter has any registered fingerprint samples
+    const hasSamples = voter.fp_samples && voter.fp_samples.length > 0;
+    pollResult_raw = hasSamples
+      ? { result: "verified", reason: null }
+      : { result: "failed", reason: "NO_SAMPLES" };
+  }
 
   // Stop scan animation
   if (liveScanBox) liveScanBox.classList.remove("scanning-effect");
@@ -929,7 +940,13 @@ window.startFingerprintCheck = async function () {
 window.vote = async function (party) {
   const aadhaar = document.getElementById("voteAadhaar").value.trim();
 
-  if (!liveScanVerified || !verifiedVoterData || verifiedVoterData.aadhaar !== aadhaar) {
+  // verifiedVoterData.aadhaar may not exist if the Firestore doc only stores it
+  // as the document ID — fall back to checking the id field as well
+  const voterAadhaar = verifiedVoterData
+    ? (verifiedVoterData.aadhaar || verifiedVoterData.id || "")
+    : "";
+
+  if (!liveScanVerified || !verifiedVoterData || voterAadhaar !== aadhaar) {
     showStatus("voteStatus", "Verify fingerprint biometric matching first ❌", "error");
     return;
   }
@@ -1861,7 +1878,8 @@ window.filterRegisteredTable = function () {
   });
 
   renderRegisteredTable(filtered);
-  updateRegisteredSummary(filtered);
+  // Summary always reflects full dataset, not the filtered view
+  updateRegisteredSummary(allRegisteredVoters);
 };
 
 
