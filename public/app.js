@@ -114,6 +114,29 @@ if (!localStorage.getItem("evm_stats")) {
   }));
 }
 
+// Warn if the page was opened without the backend (e.g. double-clicked index.html)
+async function showBackendStartupHint() {
+  const { bridge } = await checkBridgeStatus();
+  if (bridge) return;
+
+  let banner = document.getElementById("backendOfflineBanner");
+  if (!banner) {
+    banner = document.createElement("div");
+    banner.id = "backendOfflineBanner";
+    banner.style.cssText = [
+      "position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:10000;",
+      "background:#7f1d1d;border:1px solid #ef4444;color:#fecaca;",
+      "padding:12px 20px;border-radius:10px;max-width:90%;text-align:center;",
+      "font-size:0.9rem;box-shadow:0 4px 24px rgba(0,0,0,0.4);"
+    ].join("");
+    document.body.appendChild(banner);
+  }
+  banner.innerHTML =
+    "<strong>Backend offline.</strong> Close this tab and double-click " +
+    "<strong>START SecEVM.bat</strong> in your Desktop folder. " +
+    "Do not open index.html directly.";
+}
+
 // ================= Hardware Polling =================
 async function startHardwarePolling() {
   const hwBadge = document.getElementById("hwBadge");
@@ -121,6 +144,9 @@ async function startHardwarePolling() {
 
   const updateBadge = async () => {
     const { bridge, hardware } = await checkBridgeStatus();
+
+    const offlineBanner = document.getElementById("backendOfflineBanner");
+    if (offlineBanner) offlineBanner.style.display = bridge ? "none" : "block";
 
     if (!bridge) {
       // Flask bridge itself is not running
@@ -162,6 +188,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Start polling hardware status
   startHardwarePolling();
+  showBackendStartupHint();
 
   // Aadhaar pre-verification event listener
   const voteAadhaarInput = document.getElementById("voteAadhaar");

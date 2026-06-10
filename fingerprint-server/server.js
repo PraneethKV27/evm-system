@@ -598,7 +598,7 @@ app.post("/fingerprint/verify", (req, res) => {
 // Start — supports both direct run and require()
 // ===============================
 const API_PORT = 5002;
-const apiServer = app.listen(API_PORT, () => {
+const apiServer = app.listen(API_PORT, "127.0.0.1", () => {
   if (require.main === module) {
     console.log("[EVM] Fingerprint server running on port " + API_PORT);
     console.log("[EVM] STM32 auto-detection active (polling every 3s)");
@@ -611,11 +611,12 @@ const apiServer = app.listen(API_PORT, () => {
 
 apiServer.on("error", (err) => {
   if (err.code === "EADDRINUSE") {
-    console.error("[EVM] Port " + API_PORT + " is already in use. Stop the existing server first.");
-  } else {
-    console.error("[EVM] Fingerprint server error:", err.message);
+    console.error("[EVM] Port " + API_PORT + " is already in use. Close the other SecEVM window and run SecEVM.bat again.");
+    if (require.main === module) process.exit(1);
+    return;
   }
-  process.exit(1);
+  console.error("[EVM] Fingerprint server error:", err.message);
+  if (require.main === module) process.exit(1);
 });
 
 module.exports = app;

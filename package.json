@@ -5,7 +5,8 @@
   "main": "start.js",
   "scripts": {
     "start": "node start.js",
-    "install-deps": "cd fingerprint-server && npm install"
+    "postinstall": "cd fingerprint-server && npm install --omit=dev",
+    "install-deps": "cd fingerprint-server && npm install --omit=dev"
   },
   "engines": {
     "node": ">=18.0.0"

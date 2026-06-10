@@ -147,15 +147,20 @@ Frontend polls /stm32/match-status?aadhaar=  (up to 15s)
 - Git
 - (Optional) Python 3.9+ for the Python bridge
 
-### One-command start ← recommended
+### One-command start ← recommended (Desktop folder)
 
-**Double-click `SecEVM.bat`** in the project folder.
+**Double-click `START SecEVM.bat`** or **`SecEVM.bat`** in the project folder on your Desktop.
 
-It automatically:
-1. Installs `fingerprint-server` dependencies if missing
-2. Starts the fingerprint backend on port 5002
-3. Starts the frontend on port 3000
-4. Opens http://localhost:3000 in your browser
+> ⚠️ **Do NOT double-click `index.html`** — that opens the UI without the backend. The hardware badge will show "Disconnected" and fingerprint features will not work.
+
+`SecEVM.bat` automatically:
+1. Frees ports 3000 / 5002 from any previous SecEVM session
+2. Installs `fingerprint-server` dependencies on first run
+3. Starts the fingerprint backend on `http://127.0.0.1:5002`
+4. Starts the frontend on `http://localhost:3000`
+5. Opens the browser automatically
+
+See also **`START HERE.txt`** in the project folder.
 
 Or from any terminal:
 ```bash
@@ -163,9 +168,7 @@ cd evm-system
 node start.js
 ```
 
-> ⚠️ **Never open `index.html` directly via `file://`** — the browser blocks all `fetch()` calls and ES module imports in that mode. Always use `http://localhost:3000`.
-
-> 💡 **Port already in use?** If you see `Port 5002 is already in use`, stop any existing SecEVM or fingerprint-server process, then run `node start.js` again.
+> 💡 **Backend offline in the UI?** Make sure the `SecEVM.bat` window is still open. Close it and double-click `START SecEVM.bat` again.
 
 ---
 
@@ -247,7 +250,9 @@ evm-system/
 ├── functions/
 │   └── index.js            # Firebase Cloud Functions (scaffold)
 ├── start.js                # ← Unified launcher: starts both servers + opens browser
-├── SecEVM.bat              # ← Windows double-click launcher
+├── SecEVM.bat              # ← Windows launcher (auto-install deps, free ports)
+├── START SecEVM.bat        # ← Desktop shortcut — double-click this to start
+├── START HERE.txt          # ← Quick instructions when opening the folder
 ├── serve.js                # Static HTTP server for frontend (port 3000)
 ├── package.json            # Root package — "npm start" runs start.js
 ├── firebase.json           # Firebase hosting + Firestore config
