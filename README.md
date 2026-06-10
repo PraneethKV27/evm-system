@@ -8,6 +8,7 @@ SecEVM is a secure, web-based Electronic Voting Machine built around an **R307 o
 
 | Feature | Detail |
 |---------|--------|
+| **Stability & error handling** | ESLint-clean Cloud Functions scaffold, graceful port-conflict messages on startup, safer Firestore vote transactions, and a bundled `fingerprint.svg` asset (no more missing-image 404s) |
 | **Per-sample consent** | Before saving each of the 5 fingerprint samples the voter sees a confirmation dialog: "Sample N captured — do you consent to saving this sample?" Yes proceeds; No aborts enrollment |
 | **Multi-template fusion** | All 5 CharBuffer templates (Tz1–Tz5) are base64-encoded and uploaded from the STM32 to the backend. At verification time all 5 are loaded back and the R307 Search scans all pages in one pass — identical to how phone fingerprint sensors work |
 | **80 % match threshold** | The R307 Search response includes a 16-bit confidence score (0–65535). SecEVM only accepts a match when the score is ≥ 52428 (80 % of max). A "found but weak" scan returns `REASON=SCORE_LOW` and is rejected with a clear UI message |
@@ -152,6 +153,8 @@ node start.js
 
 > ⚠️ **Never open `index.html` directly via `file://`** — the browser blocks all `fetch()` calls and ES module imports in that mode. Always use `http://localhost:3000`.
 
+> 💡 **Port already in use?** If you see `Port 5002 is already in use`, stop any existing SecEVM or fingerprint-server process, then run `node start.js` again.
+
 ---
 
 ### 1. Clone
@@ -211,7 +214,7 @@ evm-system/
 │   ├── app.js              # Firebase logic, enrollment with per-sample consent,
 │   │                       # multi-template fusion verify, 80% threshold UI
 │   ├── style.css           # Dark-mode styles
-│   └── fingerprint.png     # Fingerprint icon
+│   └── fingerprint.svg     # Fingerprint icon (used in enrollment gallery & verify panel)
 ├── fingerprint-server/
 │   ├── server.js           # Node.js Express (port 5002)
 │   │                       # Endpoints: /stm32/sample-consent, /stm32/ack-sample,
@@ -361,6 +364,12 @@ USART1 (R307): 57600 baud — USART2 (PC bridge): 115200 baud
 | `fp_bridge.py` | `MATCH_FAIL` reason not stored in Firestore | `last_verify_reason` field added |
 | `fp_bridge.py` | Unused `import base64` | Removed |
 | `serve.js` | No path sanitization | `path.resolve` + boundary check added |
+| `functions/index.js` | Unused imports caused ESLint failures | Removed unused `onRequest` / `logger` imports |
+| `server.js` | `voterDataCache` referenced before declaration | Moved cache declaration above `handleUARTLine` |
+| `server.js` | Unhandled `EADDRINUSE` crash when port 5002 busy | Added `apiServer.on("error")` with clear message |
+| `app.js` | Vote transaction crashed if `PartyDB` doc missing | Creates party doc on first vote if absent |
+| `app.js` | `fingerprint.png` referenced but file missing | Replaced with bundled `fingerprint.svg` |
+| `app.js` | Null dereference in Aadhaar pre-verify reset | Added null checks for `verifyFpSensor` / `fpLiveStatus` |
 
 ---
 

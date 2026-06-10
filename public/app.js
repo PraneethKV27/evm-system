@@ -191,7 +191,7 @@ function addFpSampleToGallery(sampleIndex) {
   const scale = (0.95 + Math.random() * 0.1).toFixed(2);
   
   item.innerHTML = `
-    <img src="fingerprint.png" style="transform: rotate(${rotation}deg) scale(${scale}); opacity: ${opacity}; filter: hue-rotate(${hue}deg) brightness(1.1);" alt="Sample ${sampleIndex}">
+    <img src="fingerprint.svg" style="transform: rotate(${rotation}deg) scale(${scale}); opacity: ${opacity}; filter: hue-rotate(${hue}deg) brightness(1.1);" alt="Sample ${sampleIndex}">
     <span class="sample-number">#${sampleIndex}</span>
   `;
   grid.appendChild(item);
@@ -215,8 +215,10 @@ async function handleVoteAadhaarInput(e) {
   verifiedVoterData = null;
   setBallotLocked(true);
   if (compPanel) compPanel.style.display = "none";
-  document.getElementById("verifyFpSensor").className = "fp-sensor";
-  document.getElementById("fpLiveStatus").innerText = "Unlock ballot with biometric verification.";
+  const verifyFpSensor = document.getElementById("verifyFpSensor");
+  const fpLiveStatus = document.getElementById("fpLiveStatus");
+  if (verifyFpSensor) verifyFpSensor.className = "fp-sensor";
+  if (fpLiveStatus) fpLiveStatus.innerText = "Unlock ballot with biometric verification.";
   
   // Reset scan panel borders/glows
   const liveScanBox = document.querySelector("#verifyComparisonPanel .comparison-side:last-child .comparison-fp-box");
@@ -962,7 +964,7 @@ window.vote = async function (party) {
         const voterSnap = await tx.get(voterRef);
         const partySnap = await tx.get(partyRef);
 
-        if (voterSnap.data().flag === 1) {
+        if (!voterSnap.exists() || voterSnap.data().flag === 1) {
           throw new Error("Already voted");
         }
 
@@ -973,10 +975,14 @@ window.vote = async function (party) {
           voted_at: new Date().toISOString()
         });
 
-        // Update Party Stats — read partySnap for current vote count
-        tx.update(partyRef, {
-          votes: (partySnap.data().votes || 0) + 1
-        });
+        // Update Party Stats — create party doc if missing
+        if (partySnap.exists()) {
+          tx.update(partyRef, {
+            votes: (partySnap.data().votes || 0) + 1
+          });
+        } else {
+          tx.set(partyRef, {votes: 1});
+        }
       });
     } else {
       await mockDB.castVote(aadhaar, party);
