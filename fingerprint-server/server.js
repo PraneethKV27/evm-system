@@ -559,11 +559,21 @@ app.post("/fingerprint/verify", (req, res) => {
 });
 
 // ===============================
-// Start
+// Start — supports both direct run and require()
 // ===============================
-app.listen(5002, () => {
-  console.log("[EVM] Fingerprint server running on port 5002");
-  console.log("[EVM] STM32 auto-detection active (polling every 3s)");
-  console.log("[EVM] Multi-template fusion enrollment enabled (5 samples)");
-  console.log("[EVM] Per-sample consent endpoints: /stm32/sample-consent, /stm32/ack-sample, /stm32/deny-sample");
-});
+if (require.main === module) {
+  // Run directly: node server.js
+  app.listen(5002, () => {
+    console.log("[EVM] Fingerprint server running on port 5002");
+    console.log("[EVM] STM32 auto-detection active (polling every 3s)");
+    console.log("[EVM] Multi-template fusion enrollment enabled (5 samples)");
+    console.log("[EVM] Per-sample consent endpoints: /stm32/sample-consent, /stm32/ack-sample, /stm32/deny-sample");
+  });
+} else {
+  // Required from start.js — start.js handles the listen call
+  app.listen(5002, () => {
+    console.log("[EVM] Fingerprint backend running on port 5002");
+  });
+}
+
+module.exports = app;

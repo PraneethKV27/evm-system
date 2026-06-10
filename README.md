@@ -134,6 +134,26 @@ PC/frontend: polls /stm32/match-status → updates ballot lock
 - Git
 - (Optional) Python 3.9+ for the Python bridge
 
+### One-command start ← recommended
+
+**Double-click `SecEVM.bat`** in the project folder.
+
+It automatically:
+1. Installs `fingerprint-server` dependencies if missing
+2. Starts the fingerprint backend on port 5002
+3. Starts the frontend on port 3000
+4. Opens http://localhost:3000 in your browser
+
+Or from any terminal:
+```bash
+cd evm-system
+node start.js
+```
+
+> ⚠️ **Never open `index.html` directly via `file://`** — the browser blocks all `fetch()` calls and ES module imports in that mode. Always use `http://localhost:3000`.
+
+---
+
 ### 1. Clone
 
 ```bash
@@ -141,7 +161,7 @@ git clone https://github.com/PraneethKV27/evm-system.git
 cd evm-system
 ```
 
-### 2. Install fingerprint server dependencies
+### 2. Install dependencies
 
 ```bash
 cd fingerprint-server
@@ -149,32 +169,24 @@ npm install
 cd ..
 ```
 
-### 3. Start the backend (Node.js)
+### 3. Start everything
 
 ```bash
-node fingerprint-server/server.js
+node start.js
+# or double-click SecEVM.bat
 ```
 
-Runs on `http://localhost:5002`. STM32 auto-detected by USB VID `0483` (STMicroelectronics).
+Both servers launch in one process — no need for two terminals.
 
-Pin a specific port:
+### 4. (Optional) Pin a specific COM port for STM32
+
 ```bash
 # Windows
-set STM32_PORT=COM3 && node fingerprint-server/server.js
+set STM32_PORT=COM3 && node start.js
 
 # Linux / macOS
-STM32_PORT=/dev/ttyUSB0 node fingerprint-server/server.js
+STM32_PORT=/dev/ttyUSB0 node start.js
 ```
-
-### 4. Start the frontend
-
-```bash
-node serve.js
-```
-
-Runs on `http://localhost:3000`.
-
-> ⚠️ Open via `http://localhost:3000` — not `file://`. ES module imports and fetch calls require HTTP.
 
 ### 5. (Optional) Python bridge with Firebase Admin
 
@@ -219,7 +231,10 @@ evm-system/
 │                           # Base64 encoder/decoder (no stdlib dependency)
 ├── functions/
 │   └── index.js            # Firebase Cloud Functions (scaffold)
+├── start.js                # ← Unified launcher: starts both servers + opens browser
+├── SecEVM.bat              # ← Windows double-click launcher
 ├── serve.js                # Static HTTP server for frontend (port 3000)
+├── package.json            # Root package — "npm start" runs start.js
 ├── firebase.json           # Firebase hosting + Firestore config
 ├── firestore.rules
 └── firestore.indexes.json

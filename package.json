@@ -1,0 +1,13 @@
+{
+  "name": "secevm",
+  "version": "1.0.0",
+  "description": "SecEVM — Biometric EVM Secure Voting System",
+  "main": "start.js",
+  "scripts": {
+    "start": "node start.js",
+    "install-deps": "cd fingerprint-server && npm install"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
