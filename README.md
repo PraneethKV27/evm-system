@@ -418,10 +418,11 @@ USART1 (R307): 57600 baud — USART2 (PC bridge): 115200 baud
 
 ## Demo Mode
 
-All features work without an STM32 connected (for testing UI only):
-- Consent dialogs auto-approve after 3 seconds
-- Templates stored as `MOCK_FP_<aadhaar>_<n>_<random>` placeholders
-- Verification auto-succeeds for registered eligible voters (no 80% score — demo only)
+When no STM32 is connected, **fingerprint operations are fully blocked**:
+- **Enrollment blocked** — "⚠️ STM32 Not Connected — Cannot collect fingerprint data without the hardware sensor"
+- **Verification blocked** — "⚠️ STM32 Not Connected — Cannot verify fingerprint without the hardware sensor"
+- **No mock/fake data generated** — the system will not create `MOCK_FP_*` or `FP_*` placeholder templates
 - Hardware badge shows 🟡 `STM32: Not Connected`
+- Registration form fields (name, Aadhaar, DOB, etc.) still work, but biometric capture is disabled
 
-> **Production voting requires STM32 + R307 hardware.** Demo Mode does not enforce the 80% biometric threshold.
+> **Production voting requires STM32 + R307 hardware.** Without the fingerprint sensor connected, no biometric data can be collected or saved.
