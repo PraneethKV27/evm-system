@@ -483,6 +483,13 @@ def cmd_verify():
     if not aadhaar:
         return jsonify({"status": "error", "message": "Missing aadhaar"}), 400
 
+    # Block verification if STM32 is connected but R307 sensor is not
+    if ser and ser.is_open and r307_sensor_status != "connected":
+        return jsonify({
+            "status": "error",
+            "message": "R307 fingerprint sensor is not connected. Check sensor wiring and power before verifying."
+        }), 400
+
     body_templates = data.get("templates") or {}
     if body_templates:
         for k, v in body_templates.items():
@@ -640,6 +647,15 @@ def store():
         if not aadhaar or not samples:
             return jsonify({"success": False, "message": "Missing aadhaar or samples"}), 400
 
+        # Enforce real R307 data — reject mock/placeholder templates when hardware is connected
+        if ser and ser.is_open:
+            invalid = [s for s in samples if not _is_real_r307_template(s)]
+            if invalid:
+                return jsonify({
+                    "success": False,
+                    "message": f"Cannot save: {len(invalid)} of {len(samples)} samples are not real R307 sensor data. Connect the fingerprint sensor and capture real biometric data."
+                }), 400
+
         db.collection("VoterDB").document(aadhaar).set({
             "fp_samples":      samples,
             "fp_sample_count": len(samples),
@@ -730,6 +746,13 @@ def cmd_enroll():
     aadhaar = data.get("aadhaar", "").strip()
     if not aadhaar:
         return jsonify({"status": "error", "message": "Missing aadhaar"}), 400
+
+    # Block enrollment if STM32 is connected but R307 sensor is not
+    if ser and ser.is_open and r307_sensor_status != "connected":
+        return jsonify({
+            "status": "error",
+            "message": "R307 fingerprint sensor is not connected. Check sensor wiring and power before enrolling."
+        }), 400
 
     # Clear previous state
     _sample_consents.pop(aadhaar, None)
@@ -839,13 +862,15 @@ def ack_vote():
 
 @app.route("/status", methods=["GET"])
 def status():
+    hw = ser and ser.is_open
     return jsonify({
-        "bridge":   "online",
-        "hardware": "connected" if (ser and ser.is_open) else "disconnected",
-        "sensor":   r307_sensor_status if (ser and ser.is_open) else "disconnected",
-        "port":     SERIAL_PORT,
-        "baud":     SERIAL_BAUD,
-        "firebase": "connected",
+        "bridge":       "online",
+        "hardware":     "connected" if hw else "disconnected",
+        "sensor":       r307_sensor_status if hw else "disconnected",
+        "sensorDetail": ("R307 sensor operational" if r307_sensor_status == "connected" else "R307 fingerprint sensor not connected — check wiring") if hw else "STM32 not connected",
+        "port":         SERIAL_PORT,
+        "baud":         SERIAL_BAUD,
+        "firebase":     "connected",
     })
 
 

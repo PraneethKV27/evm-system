@@ -13,6 +13,8 @@ SecEVM is a secure, web-based Electronic Voting Machine built around an **R307 o
 | **80% verify gate enforced** | Voting unlocks only on STM32 `MATCH_OK` (R307 Search score ≥ 52428 / 80%). Scores below threshold return `REASON=SCORE_LOW` and keep the ballot locked |
 | **Stability & error handling** | ESLint-clean Cloud Functions scaffold, graceful port-conflict messages on startup, safer Firestore vote transactions, and a bundled `fingerprint.svg` asset |
 | **Per-sample consent** | Before saving each of the 5 fingerprint samples the voter sees a confirmation dialog: "Sample N captured — do you consent to saving this sample?" Yes proceeds; No aborts enrollment |
+| **R307 sensor disconnection detection** | When STM32 is connected but the R307 fingerprint sensor is not, the system shows **"⚠️ Fingerprint Sensor Not Connected"** and **blocks enrollment, verification, and capture**. After reconnecting the sensor, operations resume automatically |
+| **Real data enforcement** | Enrollment and storage are blocked unless **all 5 fingerprint templates are genuine R307 base64 data**. Mock/placeholder templates (e.g. `MOCK_FP_`, `FP_`, `PLACEHOLDER_`) are rejected when hardware is connected. Without original sensor data, the system refuses to save |
 | **Multi-template fusion** | All 5 CharBuffer templates (Tz1–Tz5) are base64-encoded and uploaded from the STM32 to the backend. At verification time all 5 are loaded back and the R307 Search scans all pages in one pass — identical to how phone fingerprint sensors work |
 | **80 % match threshold** | The R307 Search response includes a 16-bit confidence score (0–65535). SecEVM only accepts a match when the score is ≥ 52428 (80 % of max). A "found but weak" scan returns `REASON=SCORE_LOW` and is rejected with a clear UI message |
 | **Enrollment completion banner** | After all 5 samples are consented and stored, a full-screen banner confirms: "✅ Fingerprint enrollment complete. 5 samples fused into a single biometric identity for XXXX-XXXX-XXXX" |
@@ -132,7 +134,8 @@ Frontend polls /stm32/match-status?aadhaar=  (up to 15s)
 
 | Badge | Meaning |
 |-------|---------|
-| 🟢 `Hardware: Live` | STM32 + bridge online |
+| 🟢 `Hardware: Live` | STM32 + R307 sensor both online |
+| 🟠 `R307 Sensor: Disconnected ⚠️` | STM32 connected but R307 fingerprint sensor not responding — check wiring |
 | 🟡 `STM32: Not Connected` | Bridge running, no STM32 plugged in |
 | 🔴 `Hardware: Disconnected` | Bridge server not running |
 | 🟢 `Firebase Live` | Firestore connected |
@@ -343,6 +346,8 @@ USART1 (R307): 57600 baud — USART2 (PC bridge): 115200 baud
 - Biometric ballot lock: ballot only unlocks on `MATCH_OK` with score ≥ 80 %
 - Per-sample consent: voter explicitly approves each of the 5 samples
 - **Real-time R307 sensor detection** — STM32 pings the R307 every 3 s; if the sensor is disconnected, the UI shows a ⚠️ warning banner and the hardware badge turns amber. Reconnecting the sensor auto-clears the warning
+- **R307 disconnection blocks all biometric operations** — enrollment, verification, and capture are blocked at both frontend and backend when the STM32 is connected but the R307 sensor is not responding. Clear error messages guide the user to check wiring and power
+- **Real data enforcement** — when hardware is connected, all 5 fingerprint templates must pass `isRealR307Template()` validation (genuine base64 ≥ 64 chars, no mock prefixes). Mock/placeholder data is rejected at both the frontend save and backend `/fingerprint/store` endpoint
 - Aadhaar masked as `XXXX-XXXX-XXXX` in all display tables
 - Path traversal protection in `serve.js`
 

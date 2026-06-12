@@ -436,9 +436,14 @@ async function waitForEnrollComplete(aadhaar) {
 // ================= STM32 Hardware Fingerprint Enrollment =================
 // HW button uses the same real R307 5-sample + consent flow as startEnrollment().
 window.checkFingerprint = async function () {
-  const { bridge, hardware } = await checkBridgeStatus();
+  const { bridge, hardware, sensor } = await checkBridgeStatus();
   if (!bridge || !hardware) {
     showStatus("fpStatus", "Connect STM32 + R307 sensor, then use Capture Fingerprint ❌", "error");
+    return;
+  }
+  // Block if STM32 is connected but R307 sensor is not
+  if (sensor === "disconnected") {
+    showStatus("fpStatus", "⚠️ Fingerprint Sensor Not Connected — STM32 is online but the R307 sensor is not responding. Check TX/RX wiring and power. ❌", "error");
     return;
   }
   await window.startEnrollment();
@@ -609,8 +614,14 @@ window.startEnrollment = async function () {
   }
 
   // ── STM32 / Demo Mode check ───────────────────────────────────────
-  const { bridge, hardware } = await checkBridgeStatus();
+  const { bridge, hardware, sensor } = await checkBridgeStatus();
   const isDemoMode = !bridge || !hardware;
+
+  // Block enrollment if STM32 is connected but R307 sensor is not
+  if (!isDemoMode && sensor === "disconnected") {
+    showStatus("fpStatus", "⚠️ Fingerprint Sensor Not Connected — STM32 is online but the R307 sensor is not responding. Check TX/RX wiring and power. ❌", "error");
+    return;
+  }
 
   if (!isDemoMode) {
     // Hardware path: tell STM32 to start enrollment
@@ -757,6 +768,17 @@ window.startEnrollment = async function () {
   fpSensor.className = "fp-sensor success";
   showStatus("fpStatus", "5 R307 samples fused into one biometric identity (phone-style) ✔", "working");
 
+  // ── Enforce real R307 data before saving ──────────────────────────
+  // When hardware is connected, all templates must be genuine R307 data
+  if (!isDemoMode) {
+    const realCount = Object.values(fpTemplates).filter(isRealR307Template).length;
+    if (realCount < REQUIRED_FP_SAMPLES) {
+      fpSensor.className = "fp-sensor error";
+      showStatus("fpStatus", `Cannot save: only ${realCount}/${REQUIRED_FP_SAMPLES} templates are real R307 sensor data. Recapture with the fingerprint sensor connected. ❌`, "error");
+      return;
+    }
+  }
+
   const voterPayload = {
     aadhaar,
     name,
@@ -834,7 +856,7 @@ window.startFingerprintCheck = async function () {
   }
 
   // Check hardware status — determine if we go hardware or demo path
-  const { bridge, hardware } = await checkBridgeStatus();
+  const { bridge, hardware, sensor } = await checkBridgeStatus();
   const isHardwareMode = bridge && hardware;
 
   // Hardware mode: STM32 must be connected
@@ -842,6 +864,14 @@ window.startFingerprintCheck = async function () {
     // Bridge is running but STM32 not plugged in — hard block
     fpSensor.className = "fp-sensor error";
     showStatus("fpLiveStatus", "STM32 not connected. Connect hardware to verify fingerprint ❌", "error");
+    setBallotLocked(true);
+    return;
+  }
+
+  // Block if STM32 is connected but R307 sensor is not
+  if (isHardwareMode && sensor === "disconnected") {
+    fpSensor.className = "fp-sensor error";
+    showStatus("fpLiveStatus", "⚠️ Fingerprint Sensor Not Connected — STM32 is online but the R307 sensor is not responding. Check TX/RX wiring and power. ❌", "error");
     setBallotLocked(true);
     return;
   }

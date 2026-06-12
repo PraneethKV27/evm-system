@@ -282,6 +282,9 @@ app.get("/status", async (req, res) => {
     bridge:   "online",
     hardware: (stm32Connected || stm32Detected) ? "connected" : "disconnected",
     sensor:   (stm32Connected || stm32Detected) ? r307SensorStatus : "disconnected",
+    sensorDetail: (stm32Connected || stm32Detected)
+      ? (r307SensorStatus === "connected" ? "R307 sensor operational" : "R307 fingerprint sensor not connected — check wiring")
+      : "STM32 not connected",
     port:     stm32PortName || STM32_PORT || "auto",
     baud:     STM32_BAUD
   });
@@ -492,6 +495,14 @@ app.post("/stm32/cmd-enroll", (req, res) => {
   const { aadhaar } = req.body || {};
   if (!aadhaar) return res.status(400).json({ status: "error", message: "Missing aadhaar" });
 
+  // Block enrollment if STM32 is connected but R307 sensor is not
+  if (stm32Connected && r307SensorStatus !== "connected") {
+    return res.status(400).json({
+      status: "error",
+      message: "R307 fingerprint sensor is not connected. Check sensor wiring and power before enrolling."
+    });
+  }
+
   // Clear previous consent/template state for this voter
   delete sampleConsents[aadhaar];
   delete templateStore[aadhaar];
@@ -508,6 +519,14 @@ app.post("/stm32/cmd-enroll", (req, res) => {
 app.post("/stm32/cmd-verify", async (req, res) => {
   const { aadhaar, templates: bodyTemplates } = req.body || {};
   if (!aadhaar) return res.status(400).json({ status: "error", message: "Missing aadhaar" });
+
+  // Block verification if STM32 is connected but R307 sensor is not
+  if (stm32Connected && r307SensorStatus !== "connected") {
+    return res.status(400).json({
+      status: "error",
+      message: "R307 fingerprint sensor is not connected. Check sensor wiring and power before verifying."
+    });
+  }
 
   if (bodyTemplates && typeof bodyTemplates === "object") {
     Object.entries(bodyTemplates).forEach(([k, v]) => {
@@ -551,6 +570,16 @@ app.post("/stm32/cmd-verify", async (req, res) => {
 // ===============================
 app.post("/fingerprint/capture", (req, res) => {
   const { aadhaar } = req.body || {};
+
+  // Block capture if STM32 connected but R307 sensor is not
+  if (stm32Connected && r307SensorStatus !== "connected") {
+    return res.status(400).json({
+      template: null,
+      source: "error",
+      message: "R307 fingerprint sensor is not connected. Cannot capture fingerprint data."
+    });
+  }
+
   let template;
 
   if (aadhaar && fingerprintDB[aadhaar] && fingerprintDB[aadhaar].length > 0) {
@@ -568,6 +597,18 @@ app.post("/fingerprint/capture", (req, res) => {
 app.post("/fingerprint/store", (req, res) => {
   const { aadhaar, samples } = req.body || {};
   if (!aadhaar || !samples) return res.json({ success: false });
+
+  // Enforce real R307 data — reject mock/placeholder templates
+  if (stm32Connected) {
+    const invalidSamples = samples.filter(s => !isRealR307Template(s));
+    if (invalidSamples.length > 0) {
+      console.warn(`[STORE] Rejected ${invalidSamples.length} non-R307 samples for ${aadhaar}`);
+      return res.status(400).json({
+        success: false,
+        message: `Cannot save: ${invalidSamples.length} of ${samples.length} samples are not real R307 sensor data. Connect the fingerprint sensor and capture real biometric data.`
+      });
+    }
+  }
 
   fingerprintDB[aadhaar] = samples;
   console.log(`[STORE] Saved ${samples.length} samples for ${aadhaar}`);
