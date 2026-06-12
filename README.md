@@ -25,7 +25,7 @@ SecEVM is a secure, web-based Electronic Voting Machine built around an **R307 o
 
 ### 📥 Registration
 - Voter registration with 12-digit Aadhaar validation
-- Collects name, mobile, email, gender, date of birth; auto age calculation with 18+ check
+- Collects name, mobile, email, gender, date of birth; auto age calculation
 - **5 real R307 scans with per-sample consent** — STM32 captures each sample, uploads base64 CharBuffer via UART (`TEMPLATE_1`…`TEMPLATE_5`), voter approves each before proceeding
 - **Phone-style fusion** — all 5 templates stored as `fp_templates` and searched as one identity at verify time (not 5 separate voters)
 - Saves voter record to Firebase Firestore (or `localStorage` in Demo Mode)
@@ -338,7 +338,7 @@ USART1 (R307): 57600 baud — USART2 (PC bridge): 115200 baud
 
 ## 🔒 Security
 
-- Voters under 18 cannot register
+- Voters under 18 cannot vote (age check is enforced during secure voting verification, though registration allows any age)
 - One vote per voter enforced via Firestore atomic transaction
 - Biometric ballot lock: ballot only unlocks on `MATCH_OK` with score ≥ 80 %
 - Per-sample consent: voter explicitly approves each of the 5 samples

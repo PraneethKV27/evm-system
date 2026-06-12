@@ -581,8 +581,8 @@ window.startEnrollment = async function () {
     return;
   }
   const age = new Date().getFullYear() - Number(dob.split("-")[0]);
-  if (isNaN(age) || age < 18) {
-    showStatus("fpStatus", `Voter is not eligible (Age: ${isNaN(age) ? 0 : age}, under 18) ❌`, "error");
+  if (isNaN(age)) {
+    showStatus("fpStatus", "Invalid Date of Birth ❌", "error");
     return;
   }
 
@@ -751,7 +751,7 @@ window.startEnrollment = async function () {
     fingerprint_status: "enrolled",
     enrolled_at:        new Date().toISOString(),
     flag:               0,
-    eligible:           true,
+    eligible:           age >= 18,
     voted_party:        "",
     registered_at:      new Date().toISOString()
   };
