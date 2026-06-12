@@ -342,6 +342,7 @@ USART1 (R307): 57600 baud — USART2 (PC bridge): 115200 baud
 - One vote per voter enforced via Firestore atomic transaction
 - Biometric ballot lock: ballot only unlocks on `MATCH_OK` with score ≥ 80 %
 - Per-sample consent: voter explicitly approves each of the 5 samples
+- **Real-time R307 sensor detection** — STM32 pings the R307 every 3 s; if the sensor is disconnected, the UI shows a ⚠️ warning banner and the hardware badge turns amber. Reconnecting the sensor auto-clears the warning
 - Aadhaar masked as `XXXX-XXXX-XXXX` in all display tables
 - Path traversal protection in `serve.js`
 

@@ -137,6 +137,11 @@ header {
   border-color: rgba(239, 68, 68, 0.3);
 }
 
+.status-badge.warning {
+  color: #f59e0b;
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
 .badge-dot {
   width: 8px;
   height: 8px;

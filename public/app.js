@@ -143,23 +143,44 @@ async function startHardwarePolling() {
   if (!hwBadge) return;
 
   const updateBadge = async () => {
-    const { bridge, hardware } = await checkBridgeStatus();
+    const { bridge, hardware, sensor } = await checkBridgeStatus();
 
     const offlineBanner = document.getElementById("backendOfflineBanner");
     if (offlineBanner) offlineBanner.style.display = bridge ? "none" : "block";
 
+    // Sensor warning banner
+    let sensorBanner = document.getElementById("sensorWarningBanner");
+    if (!sensorBanner) {
+      sensorBanner = document.createElement("div");
+      sensorBanner.id = "sensorWarningBanner";
+      sensorBanner.style.cssText = [
+        "position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:10000;",
+        "background:#78350f;border:1px solid #f59e0b;color:#fef3c7;",
+        "padding:12px 20px;border-radius:10px;max-width:90%;text-align:center;",
+        "font-size:0.9rem;box-shadow:0 4px 24px rgba(0,0,0,0.4);display:none;"
+      ].join("");
+      sensorBanner.innerHTML =
+        "<strong>⚠️ R307 Sensor Not Detected.</strong> STM32 board is connected but the fingerprint sensor is not responding. Check TX/RX wiring and power.";
+      document.body.appendChild(sensorBanner);
+    }
+
     if (!bridge) {
-      // Flask bridge itself is not running
       hwBadge.className = "status-badge error";
       hwBadge.innerHTML = '<span class="badge-dot"></span>Hardware: Disconnected';
+      sensorBanner.style.display = "none";
     } else if (!hardware) {
-      // Bridge is running but STM32 is not plugged in
       hwBadge.className = "status-badge demo";
       hwBadge.innerHTML = '<span class="badge-dot"></span>STM32: Not Connected';
+      sensorBanner.style.display = "none";
+    } else if (sensor === "disconnected") {
+      hwBadge.className = "status-badge warning";
+      hwBadge.innerHTML = '<span class="badge-dot"></span>R307 Sensor: Disconnected ⚠️';
+      sensorBanner.style.display = "block";
     } else {
-      // Bridge running + STM32 physically connected
+      // Bridge running + STM32 connected + sensor OK
       hwBadge.className = "status-badge success";
       hwBadge.innerHTML = '<span class="badge-dot"></span>Hardware: Live';
+      sensorBanner.style.display = "none";
     }
   };
 
@@ -332,7 +353,8 @@ async function checkBridgeStatus() {
     const data = await res.json();
     return {
       bridge:   true,
-      hardware: data.hardware === "connected"
+      hardware: data.hardware === "connected",
+      sensor:   data.sensor || "unknown"
     };
   } catch (e) {
     return { bridge: false, hardware: false };

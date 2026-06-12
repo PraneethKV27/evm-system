@@ -88,6 +88,7 @@ def init_serial():
 _match_results:   dict = {}  # { aadhaar: { "status": "verified"|"failed", "ts": epoch } }
 _sample_consents: dict = {}  # { aadhaar: { n: "pending"|"approved"|"denied" } }
 _template_store:  dict = {}  # { aadhaar: { "1": base64, "2": base64, ... } }
+r307_sensor_status     = "unknown"
 _enroll_results:  dict = {}  # { aadhaar: { "status": "complete"|"aborted", "ts": epoch } }
 
 REQUIRED_FP_SAMPLES = 5
@@ -248,6 +249,15 @@ def parse_uart_line(line: str):
         # ── ERROR  ────────────────────────────────────────────────────
         if line.startswith("ERROR"):
             print(f"[STM32 ERROR] {line}")
+
+        # ── STATUS  ───────────────────────────────────────────────────
+        if line.startswith("STATUS"):
+            global r307_sensor_status
+            print(f"[STM32 STATUS] {line}")
+            if line.startswith("STATUS:SENSOR_CONNECTED"):
+                r307_sensor_status = "connected"
+            elif line.startswith("STATUS:SENSOR_DISCONNECTED"):
+                r307_sensor_status = "disconnected"
 
     except Exception as e:
         print(f"[PARSE ERROR] Could not process line '{line}': {e}")
@@ -832,6 +842,7 @@ def status():
     return jsonify({
         "bridge":   "online",
         "hardware": "connected" if (ser and ser.is_open) else "disconnected",
+        "sensor":   r307_sensor_status if (ser and ser.is_open) else "disconnected",
         "port":     SERIAL_PORT,
         "baud":     SERIAL_BAUD,
         "firebase": "connected",

@@ -187,11 +187,28 @@ int main(void)
     SendToPC("STATUS:STM32 Ready");
     sysState = STATE_IDLE;
 
+    uint32_t lastSensorCheck = 0;
+    uint8_t lastSensorState = 2; // unknown
+
     while (1)
     {
         if (rxLineReady) {
             rxLineReady = 0;
             ProcessRxLine(rxLine);
+        }
+
+        // Check sensor connection every 3 seconds while idle
+        if (sysState == STATE_IDLE && (HAL_GetTick() - lastSensorCheck > 3000)) {
+            lastSensorCheck = HAL_GetTick();
+            uint8_t isConnected = R307_CheckConnection();
+            if (isConnected != lastSensorState) {
+                lastSensorState = isConnected;
+                if (isConnected) {
+                    SendToPC("STATUS:SENSOR_CONNECTED");
+                } else {
+                    SendToPC("STATUS:SENSOR_DISCONNECTED");
+                }
+            }
         }
 
         switch (sysState)
@@ -643,6 +660,17 @@ static void ProcessRxLine(const char *line)
 /* ─────────────────────────────────────────────────────────────
    R307 Low-level helpers
    ───────────────────────────────────────────────────────────── */
+static void R307_SendCommand(const uint8_t *cmd, uint16_t len);
+
+static uint8_t R307_CheckConnection(void)
+{
+    uint8_t resp[12];
+    R307_SendCommand(CMD_GEN_IMG, sizeof(CMD_GEN_IMG));
+    HAL_StatusTypeDef s = HAL_UART_Receive(&huart1, resp, sizeof(resp), 300);
+    if (s != HAL_OK) return 0; // Disconnected
+    return 1; // Connected
+}
+
 static void R307_SendCommand(const uint8_t *cmd, uint16_t len)
 {
     HAL_UART_Transmit(&huart1, (uint8_t *)cmd, len, HAL_MAX_DELAY);

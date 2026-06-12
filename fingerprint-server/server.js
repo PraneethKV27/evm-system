@@ -23,6 +23,7 @@ const fingerprintDB = {};
 let stm32 = null;
 let stm32Connected = false;
 let stm32PortName  = null;
+let r307SensorStatus = "unknown";
 
 async function detectAndConnectSTM32() {
   try {
@@ -89,6 +90,7 @@ async function detectAndConnectSTM32() {
       stm32Connected = false;
       stm32PortName  = null;
       stm32 = null;
+      r307SensorStatus = "disconnected";
     });
 
     stm32.on("error", (err) => {
@@ -96,6 +98,7 @@ async function detectAndConnectSTM32() {
       stm32Connected = false;
       stm32PortName  = null;
       stm32 = null;
+      r307SensorStatus = "disconnected";
     });
 
   } catch (err) {
@@ -233,6 +236,11 @@ function handleUARTLine(line) {
 
   if (line.startsWith("STATUS")) {
     console.log(`[STM32 STATUS] ${line}`);
+    if (line.startsWith("STATUS:SENSOR_CONNECTED")) {
+      r307SensorStatus = "connected";
+    } else if (line.startsWith("STATUS:SENSOR_DISCONNECTED")) {
+      r307SensorStatus = "disconnected";
+    }
   }
 }
 
@@ -273,6 +281,7 @@ app.get("/status", async (req, res) => {
   res.json({
     bridge:   "online",
     hardware: (stm32Connected || stm32Detected) ? "connected" : "disconnected",
+    sensor:   (stm32Connected || stm32Detected) ? r307SensorStatus : "disconnected",
     port:     stm32PortName || STM32_PORT || "auto",
     baud:     STM32_BAUD
   });
