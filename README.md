@@ -414,6 +414,13 @@ USART1 (R307): 57600 baud — USART2 (PC bridge): 115200 baud
 | ✅ Completed Votes | Live Firebase table |
 | 🔌 Developer Hub | Integration code + AI prompt generator |
 
+## 💾 Permanent Backend Storage
+
+To ensure that fingerprint templates are not lost when the backend server restarts, the system utilizes permanent JSON database storage:
+- **Fingerprint Database**: Saved in `fingerprint-server/fingerprint_db.json`.
+- **Template Store**: Saved in `fingerprint-server/template_store.json`.
+- **Automatic Sync**: The databases are loaded automatically on server startup. Any biometric updates (from new registrations, enrollments, or updates) are written back immediately to these files.
+
 ---
 
 ## Demo Mode

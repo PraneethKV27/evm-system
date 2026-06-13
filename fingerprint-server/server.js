@@ -1,6 +1,8 @@
 const express  = require("express");
 const cors     = require("cors");
 const { SerialPort } = require("serialport");
+const fs       = require("fs");
+const path     = require("path");
 
 const app = express();
 app.use(cors());
@@ -13,9 +15,52 @@ const STM32_PORT = process.env.STM32_PORT || null;
 const STM32_BAUD = parseInt(process.env.STM32_BAUD || "115200");
 
 // ===============================
-// In-memory fingerprint database
+// In-memory fingerprint database & state stores
 // ===============================
 const fingerprintDB = {};
+const templateStore = {};
+const matchResults   = {};  // { aadhaar: { status, ts } }
+const enrollResults  = {};  // { aadhaar: { status:"complete"|"aborted", ts } }
+const sampleConsents = {};  // { aadhaar: { n: "pending"|"approved"|"denied" } }
+
+const DB_FILE = path.join(__dirname, "fingerprint_db.json");
+const TEMPLATE_FILE = path.join(__dirname, "template_store.json");
+
+function loadLocalDatabase() {
+  try {
+    if (fs.existsSync(DB_FILE)) {
+      const content = fs.readFileSync(DB_FILE, "utf8").trim();
+      if (content) {
+        const data = JSON.parse(content);
+        Object.assign(fingerprintDB, data);
+        console.log(`[DB] Loaded ${Object.keys(fingerprintDB).length} fingerprints from local file.`);
+      }
+    }
+    if (fs.existsSync(TEMPLATE_FILE)) {
+      const content = fs.readFileSync(TEMPLATE_FILE, "utf8").trim();
+      if (content) {
+        const data = JSON.parse(content);
+        Object.assign(templateStore, data);
+        console.log(`[DB] Loaded ${Object.keys(templateStore).length} template sets from local file.`);
+      }
+    }
+  } catch (err) {
+    console.error("[DB ERROR] Failed to load local database files:", err.message);
+  }
+}
+
+function saveLocalDatabase() {
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(fingerprintDB, null, 2), "utf8");
+    fs.writeFileSync(TEMPLATE_FILE, JSON.stringify(templateStore, null, 2), "utf8");
+    console.log("[DB] Saved fingerprint database and template store locally.");
+  } catch (err) {
+    console.error("[DB ERROR] Failed to write database files:", err.message);
+  }
+}
+
+// Load database immediately on startup
+loadLocalDatabase();
 
 // ===============================
 // STM32 Serial Connection
@@ -106,13 +151,7 @@ async function detectAndConnectSTM32() {
   }
 }
 
-// ===============================
-// In-memory state stores
-// ===============================
-const matchResults   = {};  // { aadhaar: { status, ts } }
-const enrollResults  = {};  // { aadhaar: { status:"complete"|"aborted", ts } }
-const sampleConsents = {};  // { aadhaar: { n: "pending"|"approved"|"denied" } }
-const templateStore  = {};  // { aadhaar: { 1: base64, 2: base64, ... } }
+// State stores defined at top of file
 
 let _uartBuffer = "";
 const voterDataCache = {};
@@ -180,6 +219,7 @@ function handleUARTLine(line) {
         if (!templateStore[id]) templateStore[id] = {};
         templateStore[id][n] = b64data;
         console.log(`[TEMPLATE] Stored R307 template ${n} for ${id} (${b64data.length} chars)`);
+        saveLocalDatabase();
       }
     }
     return;
@@ -196,6 +236,7 @@ function handleUARTLine(line) {
       }
       enrollResults[id] = { status: "complete", ts: Date.now() };
       console.log(`[ENROLL] Complete for ${id} (${Object.keys(valid).length || samples} R307 templates)`);
+      saveLocalDatabase();
     }
     return;
   }
@@ -393,6 +434,7 @@ app.post("/stm32/store-templates", (req, res) => {
   templateStore[aadhaar] = valid;
   fingerprintDB[aadhaar] = Object.values(valid);
   console.log(`[TEMPLATES] Stored ${Object.keys(valid).length} R307 templates for ${aadhaar}`);
+  saveLocalDatabase();
   res.json({ status: "ok", count: Object.keys(valid).length });
 });
 
@@ -507,6 +549,7 @@ app.post("/stm32/cmd-enroll", (req, res) => {
   delete sampleConsents[aadhaar];
   delete templateStore[aadhaar];
   delete enrollResults[aadhaar];
+  saveLocalDatabase();
 
   sendToSTM32(`CMD_ENROLL:${aadhaar}`);
   res.json({ status: "ok", command: `CMD_ENROLL:${aadhaar}` });
@@ -612,6 +655,7 @@ app.post("/fingerprint/store", (req, res) => {
 
   fingerprintDB[aadhaar] = samples;
   console.log(`[STORE] Saved ${samples.length} samples for ${aadhaar}`);
+  saveLocalDatabase();
   res.json({ success: true, message: "Fingerprint stored" });
 });
 
