@@ -620,29 +620,25 @@ window.startEnrollment = async function () {
 
   // ── STM32 / Demo Mode check ───────────────────────────────────────
   const { bridge, hardware, sensor } = await checkBridgeStatus();
-
-  // Block enrollment completely if STM32 is not connected
-  if (!bridge || !hardware) {
-    showStatus("fpStatus", "⚠️ STM32 Not Connected — Cannot collect fingerprint data without the hardware sensor. Connect the STM32 + R307 fingerprint sensor and try again. ❌", "error");
-    return;
-  }
+  const isDemoMode = !bridge || !hardware;
 
   // Block enrollment if STM32 is connected but R307 sensor is not
-  if (sensor === "disconnected") {
+  if (!isDemoMode && sensor === "disconnected") {
     showStatus("fpStatus", "⚠️ Fingerprint Sensor Not Connected — STM32 is online but the R307 sensor is not responding. Check TX/RX wiring and power. ❌", "error");
     return;
   }
 
-  const isDemoMode = false; // Hardware is confirmed connected at this point
-
   // Hardware path: tell STM32 to start enrollment
   const fpSensor = document.getElementById("enrollFpSensor");
-  fpSensor.className = "fp-sensor scanning";
+  if (!isDemoMode) {
+    fpSensor.className = "fp-sensor scanning";
+  } else {
+    console.log("[EVM] Demo Mode — enrollment will use simulated samples");
+    fpSensor.className = "fp-sensor scanning";
+  }
   // ─────────────────────────────────────────────────────────────────
 
   registrationSamples = [];
-  const fpSensor = document.getElementById("enrollFpSensor");
-  fpSensor.className = "fp-sensor scanning";
 
   // Clear visual fingerprint gallery
   const grid    = document.getElementById("enrollFpGrid");
@@ -650,8 +646,9 @@ window.startEnrollment = async function () {
   if (grid)    grid.innerHTML    = "";
   if (gallery) gallery.style.display = "none";
 
-  showStatus("fpStatus",
-    "STM32 connected. Capturing 5 fingerprint samples with consent...",
+  showStatus("fpStatus", isDemoMode
+    ? "Demo Mode — simulating 5 fingerprint samples (consent required per sample)..."
+    : "STM32 connected. Capturing 5 fingerprint samples with consent...",
     "working"
   );
 
@@ -682,6 +679,8 @@ window.startEnrollment = async function () {
         showStatus("fpStatus", `Timeout waiting for R307 sample ${sampleIndex} ❌`, "error");
         return;
       }
+    } else {
+      await new Promise(r => setTimeout(r, 600));
     }
 
     showStatus("fpStatus", `Sample ${sampleIndex} captured — asking voter for consent...`, "working");
@@ -723,6 +722,9 @@ window.startEnrollment = async function () {
         showStatus("fpStatus", `R307 template ${sampleIndex} not received from sensor ❌`, "error");
         return;
       }
+      fpTemplates[String(sampleIndex)] = templateStr;
+    } else {
+      templateStr = `MOCK_FP_${aadhaar}_${sampleIndex}_${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
       fpTemplates[String(sampleIndex)] = templateStr;
     }
 
@@ -858,23 +860,15 @@ window.startFingerprintCheck = async function () {
 
   // Check hardware status — determine if we go hardware or demo path
   const { bridge, hardware, sensor } = await checkBridgeStatus();
-  // Block verification if STM32 is not connected
-  if (!bridge || !hardware) {
-    fpSensor.className = "fp-sensor error";
-    showStatus("fpLiveStatus", "⚠️ STM32 Not Connected — Cannot verify fingerprint without the hardware sensor. Connect the STM32 + R307 and try again. ❌", "error");
-    setBallotLocked(true);
-    return;
-  }
+  const isHardwareMode = bridge && hardware;
 
   // Block if STM32 is connected but R307 sensor is not
-  if (sensor === "disconnected") {
+  if (isHardwareMode && sensor === "disconnected") {
     fpSensor.className = "fp-sensor error";
     showStatus("fpLiveStatus", "⚠️ Fingerprint Sensor Not Connected — STM32 is online but the R307 sensor is not responding. Check TX/RX wiring and power. ❌", "error");
     setBallotLocked(true);
     return;
   }
-
-  const isHardwareMode = true; // Hardware is confirmed connected at this point
 
   liveScanVerified = false;
   verifiedVoterData = null;
@@ -978,6 +972,15 @@ window.startFingerprintCheck = async function () {
       }, POLL_INTERVAL);
     });
 
+  } else {
+    // Demo Mode — simulate a 2 second biometric scan
+    showStatus("fpLiveStatus", "Demo Mode — simulating biometric scan... 👆", "working");
+    await new Promise(r => setTimeout(r, 2000));
+    // Pass if voter has any registered fingerprint samples
+    const hasSamples = voter.fp_samples && voter.fp_samples.length > 0;
+    pollResult_raw = hasSamples
+      ? { result: "verified", reason: null }
+      : { result: "failed", reason: "NO_SAMPLES" };
   }
 
   // Stop scan animation

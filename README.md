@@ -425,11 +425,10 @@ To ensure that fingerprint templates are not lost when the backend server restar
 
 ## Demo Mode
 
-When no STM32 is connected, **fingerprint operations are fully blocked**:
-- **Enrollment blocked** — "⚠️ STM32 Not Connected — Cannot collect fingerprint data without the hardware sensor"
-- **Verification blocked** — "⚠️ STM32 Not Connected — Cannot verify fingerprint without the hardware sensor"
-- **No mock/fake data generated** — the system will not create `MOCK_FP_*` or `FP_*` placeholder templates
-- Hardware badge shows 🟡 `STM32: Not Connected`
-- Registration form fields (name, Aadhaar, DOB, etc.) still work, but biometric capture is disabled
+When no STM32 hardware is connected, the system automatically falls back to **Demo Mode**:
+- **Simulated Biometric Enrollment**: Automatically simulates the collection of 5 fingerprint samples with per-sample voter consent dialogs.
+- **Simulated Biometric Verification**: Simulates a 2-second fingerprint scan, validating the voter against their registered fingerprint templates.
+- **Hardware Badge**: Displays 🟡 `STM32: Not Connected` to indicate simulation mode.
+- Allows testing of all registration, consent, secure voting, and real-time dashboard updates without needing a physical microcontroller connected.
 
-> **Production voting requires STM32 + R307 hardware.** Without the fingerprint sensor connected, no biometric data can be collected or saved.
+> **Production voting requires STM32 + R307 hardware.** When the board is connected, the system transitions to real hardware UART communication automatically.
