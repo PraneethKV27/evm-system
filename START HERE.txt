@@ -6,7 +6,7 @@ DO NOT double-click index.html — the backend will NOT work that way.
 TO START THE APP:
   1. Double-click  "START SecEVM.bat"  or  "SecEVM.bat"
   2. Wait for the black window to say "SecEVM is ready"
-  3. Your browser opens at http://localhost:3000
+  3. Your browser opens at http://localhost:3010
 
 BACKEND (fingerprint server):
   http://127.0.0.1:5002/status

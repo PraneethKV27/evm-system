@@ -16,7 +16,7 @@ const fs     = require("fs");
 const path   = require("path");
 const { exec, execSync } = require("child_process");
 
-const WEB_PORT = 3000;
+const WEB_PORT = 3010;
 const API_PORT = 5002;
 const API_HOST = "127.0.0.1";
 

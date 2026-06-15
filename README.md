@@ -154,10 +154,10 @@ Frontend polls /stm32/match-status?aadhaar=  (up to 15s)
 > ⚠️ **Do NOT double-click `index.html`** — that opens the UI without the backend. The hardware badge will show "Disconnected" and fingerprint features will not work.
 
 `SecEVM.bat` automatically:
-1. Frees ports 3000 / 5002 from any previous SecEVM session
+1. Frees ports 3010 / 5002 from any previous SecEVM session
 2. Installs `fingerprint-server` dependencies on first run
 3. Starts the fingerprint backend on `http://127.0.0.1:5002`
-4. Starts the frontend on `http://localhost:3000`
+4. Starts the frontend on `http://localhost:3010`
 5. Opens the browser automatically
 
 See also **`START HERE.txt`** in the project folder.
@@ -253,7 +253,7 @@ evm-system/
 ├── SecEVM.bat              # ← Windows launcher (auto-install deps, free ports)
 ├── START SecEVM.bat        # ← Desktop shortcut — double-click this to start
 ├── START HERE.txt          # ← Quick instructions when opening the folder
-├── serve.js                # Static HTTP server for frontend (port 3000)
+├── serve.js                # Static HTTP server for frontend (port 3010)
 ├── package.json            # Root package — "npm start" runs start.js
 ├── firebase.json           # Firebase hosting + Firestore config
 ├── firestore.rules
@@ -360,7 +360,7 @@ USART1 (R307): 57600 baud — USART2 (PC bridge): 115200 baud
 | Python Bridge | Flask + `firebase-admin` + `pyserial` |
 | Hardware | STM32 + R307 optical fingerprint sensor |
 | Protocol | UART 115200 baud (PC↔STM32), 57600 baud (STM32↔R307) |
-| Web Server | Node.js HTTP (`serve.js`, port 3000) |
+| Web Server | Node.js HTTP (`serve.js`, port 3010) |
 
 ---
 

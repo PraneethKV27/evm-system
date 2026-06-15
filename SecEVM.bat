@@ -18,9 +18,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo  [SETUP] Checking ports 3000 and 5002...
+echo  [SETUP] Checking ports 3010 and 5002...
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":5002" ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":3000" ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":3010" ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>&1
 ping 127.0.0.1 -n 2 >nul
 
 if not exist "fingerprint-server\node_modules" (
@@ -39,7 +39,7 @@ if not exist "fingerprint-server\node_modules" (
 )
 
 echo  [START] Launching SecEVM...
-echo  [INFO]  Frontend  -^>  http://localhost:3000
+echo  [INFO]  Frontend  -^>  http://localhost:3010
 echo  [INFO]  Backend   -^>  http://127.0.0.1:5002
 echo  [INFO]  Browser will open automatically.
 echo.
