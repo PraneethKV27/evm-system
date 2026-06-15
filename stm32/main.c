@@ -7,8 +7,7 @@
   *   - R307 Optical Fingerprint Sensor  → USART1 @ 57600
   *   - PC / bridge                      → USART2 @ 115200
   *   - Green LED  PA5   Red LED  PA6   Buzzer PB0
-  *   - BTN_CONFIRM PC13 (built-in, active-low)
-  *   - BTN_NEXT   PB1   (active-low)
+  *   - Party buttons: PB1 (AB), PB2 (CD), PB3 (EF), PB4 (GH), PB5 (NOTA)
   *
   ******************************************************************************
   */
@@ -26,7 +25,6 @@
 /* USER CODE BEGIN PTD */
 typedef enum {
     STATE_IDLE = 0,
-    STATE_ENTER_AADHAAR,
     STATE_ENROLLING,
     STATE_VERIFY,
     STATE_VOTING
@@ -62,12 +60,9 @@ static SystemState sysState = STATE_IDLE;
 
 /* Current enrollment progress */
 static char    currentAadhaar[AADHAAR_LEN + 1] = {0};
-static uint8_t aadhaarPos     = 0;
-static uint8_t currentDigit   = 0;
 static uint8_t currentSample  = 0;   /* 1-based sample being processed      */
 static uint8_t consentGranted = 0;   /* set by ProcessRxLine when ACK arrives */
 static uint8_t enrollAborted  = 0;   /* set when ABORT_ENROLL received        */
-
 
 /* PC→STM32 receive buffer */
 static uint8_t rxByte;
@@ -142,11 +137,8 @@ static void     LED_Red_Off(void);
 static void     Buzzer_Beep(void);
 static void     Buzzer_BeepLong(void);
 
-static void     EnterAadhaarMode(void);
 static void     ProcessRxLine(const char *line);
 
-static uint8_t  Btn_ConfirmPressed(void);
-static uint8_t  Btn_NextPressed(void);
 static uint8_t  Btn_AB_Pressed(void);
 static uint8_t  Btn_CD_Pressed(void);
 static uint8_t  Btn_EF_Pressed(void);
@@ -226,44 +218,7 @@ int main(void)
     switch (sysState)
     {
         case STATE_IDLE:
-            if (Btn_ConfirmPressed()) {
-                HAL_Delay(50);
-                sysState = STATE_ENTER_AADHAAR;
-                EnterAadhaarMode();
-            }
             break;
-
-        case STATE_ENTER_AADHAAR:
-        {
-            if (Btn_NextPressed()) {
-                HAL_Delay(50);
-                currentDigit = (currentDigit + 1) % 10;
-                char buf[32];
-                snprintf(buf, sizeof(buf), "Digit[%d]=%d\r\n", aadhaarPos, currentDigit);
-                Debug_Print(buf);
-                HAL_Delay(200);
-            }
-            if (Btn_ConfirmPressed()) {
-                HAL_Delay(50);
-                currentAadhaar[aadhaarPos] = '0' + currentDigit;
-                aadhaarPos++;
-                currentDigit = 0;
-                Buzzer_Beep();
-
-                if (aadhaarPos == AADHAAR_LEN) {
-                    currentAadhaar[AADHAAR_LEN] = '\0';
-                    char msg[64];
-                    snprintf(msg, sizeof(msg), "Aadhaar: %s\r\n", currentAadhaar);
-                    Debug_Print(msg);
-                    char pcMsg[64];
-                    snprintf(pcMsg, sizeof(pcMsg), "REQUEST_VOTER:%s", currentAadhaar);
-                    SendToPC(pcMsg);
-                    sysState = STATE_ENROLLING;
-                }
-                HAL_Delay(300);
-            }
-            break;
-        }
 
         case STATE_ENROLLING:
         {
@@ -301,7 +256,6 @@ int main(void)
                 HAL_Delay(1000); LED_Green_Off();
                 
                 sysState = STATE_VOTING;
-                currentDigit = 0; // Use to track selected party: 0=AB, 1=CD, 2=EF, 3=GH, 4=NOTA
                 SendToPC("STATUS:VOTING_MODE_ACTIVE");
             } else if (result == 0x10) {
                 /* Score below 80% threshold — not a hard sensor fail */
@@ -332,26 +286,26 @@ int main(void)
                 HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
             }
 
-            if (Btn_NextPressed()) {
-                HAL_Delay(50);
-                currentDigit = (currentDigit + 1) % 5; // cycle through 5 options
-                Buzzer_Beep();
-                
-                const char *parties[] = {"AB", "CD", "EF", "GH", "NOTA"};
-                char buf[64];
-                snprintf(buf, sizeof(buf), "STATUS:SELECTED_PARTY=%s", parties[currentDigit]);
-                SendToPC(buf);
-                
-                HAL_Delay(250);
+            const char *selected_party = NULL;
+
+            if (Btn_AB_Pressed()) {
+                selected_party = "AB";
+            } else if (Btn_CD_Pressed()) {
+                selected_party = "CD";
+            } else if (Btn_EF_Pressed()) {
+                selected_party = "EF";
+            } else if (Btn_GH_Pressed()) {
+                selected_party = "GH";
+            } else if (Btn_NOTA_Pressed()) {
+                selected_party = "NOTA";
             }
 
-            if (Btn_ConfirmPressed()) {
-                HAL_Delay(50);
+            if (selected_party != NULL) {
+                HAL_Delay(50); // Debounce
                 HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET); // reset blink
                 
-                const char *parties[] = {"AB", "CD", "EF", "GH", "NOTA"};
                 char pcMsg[128];
-                snprintf(pcMsg, sizeof(pcMsg), "VOTE_CAST:ID=%s:PARTY=%s", currentAadhaar, parties[currentDigit]);
+                snprintf(pcMsg, sizeof(pcMsg), "VOTE_CAST:ID=%s:PARTY=%s", currentAadhaar, selected_party);
                 SendToPC(pcMsg);
                 
                 Buzzer_BeepLong();
@@ -614,7 +568,6 @@ static void ProcessRxLine(const char *line)
             }
         }
 
-
         char loadDoneMsg[48];
         snprintf(loadDoneMsg, sizeof(loadDoneMsg), "Loaded template %d (%u bytes)\r\n", page, (unsigned)rawLen);
         Debug_Print(loadDoneMsg);
@@ -659,7 +612,6 @@ static void ProcessRxLine(const char *line)
     if (strncmp(line, "CMD_VERIFY:", 11) == 0) {
         strncpy(currentAadhaar, line + 11, AADHAAR_LEN);
         currentAadhaar[AADHAAR_LEN] = '\0';
-
         sysState = STATE_VERIFY;
         return;
     }
@@ -864,29 +816,8 @@ static uint16_t Base64Decode(const char *in, uint8_t *out)
 }
 
 /* ─────────────────────────────────────────────────────────────
-   Aadhaar entry init
-   ───────────────────────────────────────────────────────────── */
-static void EnterAadhaarMode(void)
-{
-    memset(currentAadhaar, 0, sizeof(currentAadhaar));
-    aadhaarPos   = 0;
-    currentDigit = 0;
-    Debug_Print("Enter 12-digit Aadhaar\r\n");
-}
-
-/* ─────────────────────────────────────────────────────────────
    Button helpers
    ───────────────────────────────────────────────────────────── */
-static uint8_t Btn_ConfirmPressed(void)
-{
-    return (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == GPIO_PIN_RESET);
-}
-
-static uint8_t Btn_NextPressed(void)
-{
-    return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_1) == GPIO_PIN_RESET);
-}
-
 static uint8_t Btn_AB_Pressed(void)
 {
     return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_1) == GPIO_PIN_RESET);
@@ -999,7 +930,6 @@ static void MX_GPIO_Init(void)
 {
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
-    __HAL_RCC_GPIOC_CLK_ENABLE();
 
     GPIO_InitTypeDef GPIO_InitStruct = {0};
 
@@ -1019,11 +949,6 @@ static void MX_GPIO_Init(void)
     GPIO_InitStruct.Mode  = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull  = GPIO_PULLUP;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-    GPIO_InitStruct.Pin   = GPIO_PIN_13;
-    GPIO_InitStruct.Mode  = GPIO_MODE_INPUT;
-    GPIO_InitStruct.Pull  = GPIO_NOPULL;
-    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5 | GPIO_PIN_6, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
