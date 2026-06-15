@@ -222,6 +222,11 @@ int main(void)
 
         case STATE_ENROLLING:
         {
+            if (!R307_CheckConnection()) {
+                SendToPC("STATUS:SENSOR_DISCONNECTED");
+                sysState = STATE_IDLE;
+                break;
+            }
             uint8_t result = R307_Enroll(currentAadhaar);
             if (result == 0) {
                 char pcMsg[64];
@@ -247,6 +252,11 @@ int main(void)
 
         case STATE_VERIFY:
         {
+            if (!R307_CheckConnection()) {
+                SendToPC("STATUS:SENSOR_DISCONNECTED");
+                sysState = STATE_IDLE;
+                break;
+            }
             uint8_t result = R307_Verify(currentAadhaar);
             if (result == 0) {
                 char pcMsg[64];
@@ -654,12 +664,41 @@ static uint8_t R307_ReadResponse(uint8_t *buf, uint16_t len)
 static uint8_t R307_WaitForFinger(void)
 {
     uint8_t resp[12];
-    for (uint8_t i = 0; i < 30; i++) {
+    uint32_t lastMsgTime = 0;
+
+    while (1) {
+        if (rxLineReady) {
+            rxLineReady = 0;
+            ProcessRxLine(rxLine);
+        }
+
+        if (enrollAborted) {
+            return 0xFE; // Aborted by PC
+        }
+
+        if (!R307_CheckConnection()) {
+            SendToPC("STATUS:SENSOR_DISCONNECTED");
+            return 0xFF; // Disconnected
+        }
+
         R307_SendCommand(CMD_GEN_IMG, sizeof(CMD_GEN_IMG));
-        if (R307_ReadResponse(resp, sizeof(resp)) == 0x00) return 0x00;
+        uint8_t status = R307_ReadResponse(resp, sizeof(resp));
+
+        if (status == 0x00) {
+            return 0x00; // Finger placed
+        } else if (status == 0x02) {
+            if (HAL_GetTick() - lastMsgTime > 1500) {
+                lastMsgTime = HAL_GetTick();
+                SendToPC("STATUS:PLEASE_PLACE_FINGER");
+            }
+        } else {
+            if (HAL_GetTick() - lastMsgTime > 1500) {
+                lastMsgTime = HAL_GetTick();
+                SendToPC("STATUS:SENSOR_ERROR");
+            }
+        }
         HAL_Delay(200);
     }
-    return 0x02;
 }
 
 static uint8_t R307_CaptureAndConvert(uint8_t slot)
