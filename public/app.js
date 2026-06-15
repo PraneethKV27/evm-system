@@ -843,8 +843,17 @@ window.startFingerprintCheck = async function () {
   const { bridge, hardware, sensor } = await checkBridgeStatus();
   const isHardwareMode = bridge && hardware;
 
+  // Block completely if STM32 hardware is disconnected
+  if (!isHardwareMode) {
+    fpSensor.className = "fp-sensor error";
+    showStatus("fpLiveStatus", "⚠️ STM32 Hardware Disconnected — Biometric verification requires physical hardware connection. Connect the STM32 board and try again. ❌", "error");
+    if (compPanel) compPanel.style.display = "none";
+    setBallotLocked(true);
+    return;
+  }
+
   // Block if STM32 is connected but R307 sensor is not
-  if (isHardwareMode && sensor === "disconnected") {
+  if (sensor === "disconnected") {
     fpSensor.className = "fp-sensor error";
     showStatus("fpLiveStatus", "⚠️ Fingerprint Sensor Not Connected — STM32 is online but the R307 sensor is not responding. Check TX/RX wiring and power. ❌", "error");
     setBallotLocked(true);
