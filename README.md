@@ -11,14 +11,15 @@ SecEVM is a secure, web-based Electronic Voting Machine built around an **R307 o
 | **Phone-style biometric fusion** | Registration collects **5 real R307 scans** (different angles/pressures). All 5 CharBuffer templates are stored and treated as **one fused identity** — verification succeeds if **any** template matches at **≥ 80%** confidence, exactly like phone/laptop fingerprint sensors |
 | **Real-hardware-only enrollment** | Mock `/stm32/enroll` bypass removed. Hardware path waits for UART `TEMPLATE_N` base64 uploads from the sensor, polls `enroll-status` until `ENROLL_OK`, then saves all 5 templates to Firestore as `fp_templates` |
 | **80% verify gate enforced** | Voting unlocks only on STM32 `MATCH_OK` (R307 Search score ≥ 52428 / 80%). Scores below threshold return `REASON=SCORE_LOW` and keep the ballot locked |
-| **Stability & error handling** | ESLint-clean Cloud Functions scaffold, graceful port-conflict messages on startup, safer Firestore vote transactions, and a bundled `fingerprint.svg` asset |
+| **Stability & error handling** | ESLint-clean Cloud Functions scaffold, port conflict fixes (moved to `3010` to bypass caches), and a bundled `fingerprint.svg` asset |
 | **Per-sample consent** | Before saving each of the 5 fingerprint samples the voter sees a confirmation dialog: "Sample N captured — do you consent to saving this sample?" Yes proceeds; No aborts enrollment |
 | **R307 sensor disconnection detection** | When STM32 is connected but the R307 fingerprint sensor is not, the system shows **"⚠️ Fingerprint Sensor Not Connected"** and **blocks enrollment, verification, and capture**. After reconnecting the sensor, operations resume automatically |
 | **Real data enforcement** | Enrollment and storage are blocked unless **all 5 fingerprint templates are genuine R307 base64 data**. Mock/placeholder templates (e.g. `MOCK_FP_`, `FP_`, `PLACEHOLDER_`) are rejected when hardware is connected. Without original sensor data, the system refuses to save |
 | **Multi-template fusion** | All 5 CharBuffer templates (Tz1–Tz5) are base64-encoded and uploaded from the STM32 to the backend. At verification time all 5 are loaded back and the R307 Search scans all pages in one pass — identical to how phone fingerprint sensors work |
 | **80 % match threshold** | The R307 Search response includes a 16-bit confidence score (0–65535). SecEVM only accepts a match when the score is ≥ 52428 (80 % of max). A "found but weak" scan returns `REASON=SCORE_LOW` and is rejected with a clear UI message |
 | **Enrollment completion banner** | After all 5 samples are consented and stored, a full-screen banner confirms: "✅ Fingerprint enrollment complete. 5 samples fused into a single biometric identity for XXXX-XXXX-XXXX" |
-| **Demo Mode support** | When no hardware is connected the consent dialog auto-approves after 3 seconds, allowing full offline testing |
+| **Strict hardware verification** | Fully blocks biometric verification if the STM32 hardware is disconnected, refusing to proceed with mock simulations in live deployments |
+| **Anti-autofill protection** | Added `autocomplete="off"` to all Aadhaar and voter input fields, blocking browsers from caching and suggesting sensitive voter details |
 | **Firestore fields** | `fp_sample_count: 5`, `fingerprint_status: "enrolled"`, `enrolled_at: <timestamp>` written on successful enrollment |
 
 ---
