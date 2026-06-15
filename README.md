@@ -8,19 +8,20 @@ SecEVM is a secure, web-based Electronic Voting Machine built around an **R307 o
 
 | Feature | Detail |
 |---------|--------|
-| **Phone-style biometric fusion** | Registration collects **5 real R307 scans** (different angles/pressures). All 5 CharBuffer templates are stored and treated as **one fused identity** — verification succeeds if **any** template matches at **≥ 80%** confidence, exactly like phone/laptop fingerprint sensors |
+| **Obsolete PC13 & Manual Aadhaar Entry Removed** | Manual Aadhaar entry via STM32 buttons has been removed. Aadhaar numbers are now inputted directly on the PC web UI. `PC13` confirm button logic is fully deprecated |
+| **Direct Button Voting** | Cast votes instantly using 5 dedicated push buttons on the STM32 board (`PB1` to `PB5` for parties/NOTA) without needing a confirm button cycle |
+| **Indefinite Scan Wait & Warnings** | The scanner waits indefinitely for a finger scan (no auto-timeout). It warns the PC every 1.5s with `STATUS:PLEASE_PLACE_FINGER` to show an on-screen placement prompt |
+| **Scan Success Buzzer Feedback** | A confirmation beep plays on the buzzer for each successfully captured sample during enrollment |
+| **No Auto-Approve Consent** | The 3-second auto-approval countdown has been removed; consent dialogs wait indefinitely for manual "Yes" or "No" clicks |
+| **10-Minute Polling Gaskets** | The frontend waits up to 10 minutes during scans to accommodate slow physical finger placement |
+| **Phone-style biometric fusion** | Registration collects **5 real R307 scans** (different angles/pressures). All 5 CharBuffer templates are stored and treated as **one fused identity** — verification succeeds if **any** template matches at **≥ 80%** confidence |
 | **Real-hardware-only enrollment** | Mock `/stm32/enroll` bypass removed. Hardware path waits for UART `TEMPLATE_N` base64 uploads from the sensor, polls `enroll-status` until `ENROLL_OK`, then saves all 5 templates to Firestore as `fp_templates` |
 | **80% verify gate enforced** | Voting unlocks only on STM32 `MATCH_OK` (R307 Search score ≥ 52428 / 80%). Scores below threshold return `REASON=SCORE_LOW` and keep the ballot locked |
-| **Stability & error handling** | ESLint-clean Cloud Functions scaffold, port conflict fixes (moved to `3010` to bypass caches), and a bundled `fingerprint.svg` asset |
-| **Per-sample consent** | Before saving each of the 5 fingerprint samples the voter sees a confirmation dialog: "Sample N captured — do you consent to saving this sample?" Yes proceeds; No aborts enrollment |
 | **R307 sensor disconnection detection** | When STM32 is connected but the R307 fingerprint sensor is not, the system shows **"⚠️ Fingerprint Sensor Not Connected"** and **blocks enrollment, verification, and capture**. After reconnecting the sensor, operations resume automatically |
-| **Real data enforcement** | Enrollment and storage are blocked unless **all 5 fingerprint templates are genuine R307 base64 data**. Mock/placeholder templates (e.g. `MOCK_FP_`, `FP_`, `PLACEHOLDER_`) are rejected when hardware is connected. Without original sensor data, the system refuses to save |
-| **Multi-template fusion** | All 5 CharBuffer templates (Tz1–Tz5) are base64-encoded and uploaded from the STM32 to the backend. At verification time all 5 are loaded back and the R307 Search scans all pages in one pass — identical to how phone fingerprint sensors work |
-| **80 % match threshold** | The R307 Search response includes a 16-bit confidence score (0–65535). SecEVM only accepts a match when the score is ≥ 52428 (80 % of max). A "found but weak" scan returns `REASON=SCORE_LOW` and is rejected with a clear UI message |
-| **Enrollment completion banner** | After all 5 samples are consented and stored, a full-screen banner confirms: "✅ Fingerprint enrollment complete. 5 samples fused into a single biometric identity for XXXX-XXXX-XXXX" |
+| **Real data enforcement** | Enrollment and storage are blocked unless **all 5 fingerprint templates are genuine R307 base64 data**. Mock/placeholder templates are rejected when hardware is connected |
 | **Strict hardware verification** | Fully blocks biometric verification if the STM32 hardware is disconnected, refusing to proceed with mock simulations in live deployments |
 | **Anti-autofill protection** | Added `autocomplete="off"` to all Aadhaar and voter input fields, blocking browsers from caching and suggesting sensitive voter details |
-| **Firestore fields** | `fp_sample_count: 5`, `fingerprint_status: "enrolled"`, `enrolled_at: <timestamp>` written on successful enrollment |
+
 
 ---
 
@@ -274,8 +275,11 @@ evm-system/
 | Green LED | PA5 | Output |
 | Red LED   | PA6 | Output |
 | Buzzer    | PB0 | Output |
-| BTN_CONFIRM (Blue button) | PC13 | Input, active-low |
-| BTN_NEXT (digit cycle)    | PB1  | Input, active-low, pull-up |
+| Party AB Button | PB1 | Input, active-low, pull-up |
+| Party CD Button | PB2 | Input, active-low, pull-up |
+| Party EF Button | PB3 | Input, active-low, pull-up |
+| Party GH Button | PB4 | Input, active-low, pull-up |
+| Party NOTA Button | PB5 | Input, active-low, pull-up |
 
 USART1 (R307): 57600 baud — USART2 (PC bridge): 115200 baud
 
