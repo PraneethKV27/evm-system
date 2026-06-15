@@ -403,7 +403,7 @@ async function fetchStoredTemplates(aadhaar) {
 }
 
 async function waitForSampleReady(aadhaar, sampleIndex) {
-  return pollUntil(30000, 500, async () => {
+  return pollUntil(600000, 500, async () => {
     try {
       const res  = await fetch(
         `http://127.0.0.1:5002/stm32/sample-consent?aadhaar=${aadhaar}&sample=${sampleIndex}`
@@ -536,21 +536,7 @@ function showSampleConsentDialog(sampleIndex, isDemoMode) {
     yesBtn.onclick = () => finish(true);
     noBtn.onclick  = () => finish(false);
 
-    // Demo Mode: auto-approve after 3 seconds
-    if (isDemoMode) {
-      let remaining = 3;
-      timerEl.innerText = `Demo Mode — auto-approving in ${remaining}s`;
-      countdown = setInterval(() => {
-        remaining--;
-        if (remaining <= 0) {
-          finish(true);
-        } else {
-          timerEl.innerText = `Demo Mode — auto-approving in ${remaining}s`;
-        }
-      }, 1000);
-    } else {
-      timerEl.innerText = "";
-    }
+    timerEl.innerText = "";
   });
 }
 

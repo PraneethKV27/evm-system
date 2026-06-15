@@ -374,7 +374,7 @@ static uint8_t R307_Enroll(const char *aadhaar)
             return code;
         }
 
-        LED_Green_On(); HAL_Delay(300); LED_Green_Off();
+        LED_Green_On(); Buzzer_Beep(); HAL_Delay(300); LED_Green_Off();
         Debug_Print("Remove finger\r\n");
         HAL_Delay(1200);
 
