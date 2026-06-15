@@ -105,7 +105,8 @@ typedef enum {
     STATE_IDLE = 0,
     STATE_ENTER_AADHAAR,
     STATE_ENROLLING,
-    STATE_VERIFY
+    STATE_VERIFY,
+    STATE_VOTING
 } SystemState;
 
 static SystemState sysState = STATE_IDLE;
@@ -169,6 +170,11 @@ static void     ProcessRxLine(const char *line);
 
 static uint8_t  Btn_ConfirmPressed(void);
 static uint8_t  Btn_NextPressed(void);
+static uint8_t  Btn_AB_Pressed(void);
+static uint8_t  Btn_CD_Pressed(void);
+static uint8_t  Btn_EF_Pressed(void);
+static uint8_t  Btn_GH_Pressed(void);
+static uint8_t  Btn_NOTA_Pressed(void);
 
 /* ─────────────────────────────────────────────────────────────
    MAIN
@@ -287,6 +293,10 @@ int main(void)
                     SendToPC(pcMsg);
                     LED_Green_On(); Buzzer_Beep();
                     HAL_Delay(1000); LED_Green_Off();
+                    
+                    sysState = STATE_VOTING;
+                    currentDigit = 0; // Use to track selected party: 0=AB, 1=CD, 2=EF, 3=GH, 4=NOTA
+                    SendToPC("STATUS:VOTING_MODE_ACTIVE");
                 } else if (result == 0x10) {
                     /* Score below 80% threshold — not a hard sensor fail */
                     char pcMsg[80];
@@ -295,14 +305,56 @@ int main(void)
                     SendToPC(pcMsg);
                     LED_Red_On(); Buzzer_BeepLong();
                     HAL_Delay(1000); LED_Red_Off();
+                    sysState = STATE_IDLE;
                 } else {
                     char pcMsg[64];
                     snprintf(pcMsg, sizeof(pcMsg), "MATCH_FAIL ID=%s", currentAadhaar);
                     SendToPC(pcMsg);
                     LED_Red_On(); Buzzer_BeepLong();
                     HAL_Delay(1000); LED_Red_Off();
+                    sysState = STATE_IDLE;
                 }
-                sysState = STATE_IDLE;
+                break;
+            }
+
+            case STATE_VOTING:
+            {
+                // Toggle Green LED to indicate active voting state
+                static uint32_t lastBlink = 0;
+                if (HAL_GetTick() - lastBlink > 500) {
+                    lastBlink = HAL_GetTick();
+                    HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+                }
+
+                if (Btn_NextPressed()) {
+                    HAL_Delay(50);
+                    currentDigit = (currentDigit + 1) % 5; // cycle through 5 options
+                    Buzzer_Beep();
+                    
+                    const char *parties[] = {"AB", "CD", "EF", "GH", "NOTA"};
+                    char buf[64];
+                    snprintf(buf, sizeof(buf), "STATUS:SELECTED_PARTY=%s", parties[currentDigit]);
+                    SendToPC(buf);
+                    
+                    HAL_Delay(250);
+                }
+
+                if (Btn_ConfirmPressed()) {
+                    HAL_Delay(50);
+                    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET); // reset blink
+                    
+                    const char *parties[] = {"AB", "CD", "EF", "GH", "NOTA"};
+                    char pcMsg[128];
+                    snprintf(pcMsg, sizeof(pcMsg), "VOTE_CAST:ID=%s:PARTY=%s", currentAadhaar, parties[currentDigit]);
+                    SendToPC(pcMsg);
+                    
+                    Buzzer_BeepLong();
+                    LED_Green_On();
+                    HAL_Delay(1000);
+                    LED_Green_Off();
+                    
+                    sysState = STATE_IDLE;
+                }
                 break;
             }
 
@@ -895,6 +947,31 @@ static uint8_t Btn_NextPressed(void)
     return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_1) == GPIO_PIN_RESET);
 }
 
+static uint8_t Btn_AB_Pressed(void)
+{
+    return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_1) == GPIO_PIN_RESET);
+}
+
+static uint8_t Btn_CD_Pressed(void)
+{
+    return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_2) == GPIO_PIN_RESET);
+}
+
+static uint8_t Btn_EF_Pressed(void)
+{
+    return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3) == GPIO_PIN_RESET);
+}
+
+static uint8_t Btn_GH_Pressed(void)
+{
+    return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_4) == GPIO_PIN_RESET);
+}
+
+static uint8_t Btn_NOTA_Pressed(void)
+{
+    return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_5) == GPIO_PIN_RESET);
+}
+
 /* ─────────────────────────────────────────────────────────────
    LED & Buzzer
    ───────────────────────────────────────────────────────────── */
@@ -1001,8 +1078,8 @@ static void MX_GPIO_Init(void)
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-    /* BTN_NEXT PB1 */
-    GPIO_InitStruct.Pin   = GPIO_PIN_1;
+    /* 5 Party buttons on PORTB: PB1 (AB), PB2 (CD), PB3 (EF), PB4 (GH), PB5 (NOTA) */
+    GPIO_InitStruct.Pin   = GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3 | GPIO_PIN_4 | GPIO_PIN_5;
     GPIO_InitStruct.Mode  = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull  = GPIO_PULLUP;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);

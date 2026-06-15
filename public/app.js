@@ -1010,6 +1010,14 @@ window.startFingerprintCheck = async function () {
 
 // ================= Cast Vote =================
 window.vote = async function (party) {
+  const { bridge, hardware } = await checkBridgeStatus();
+  const isHardwareMode = bridge && hardware;
+
+  if (isHardwareMode) {
+    showStatus("voteStatus", "Voting is locked to physical EVM buttons. Please press the physical push button on the STM32 board to cast your vote! 🔌", "error");
+    return;
+  }
+
   const aadhaar = document.getElementById("voteAadhaar").value.trim();
 
   // verifiedVoterData.aadhaar may not exist if the Firestore doc only stores it
@@ -1116,19 +1124,63 @@ function showStatus(elementId, text, type) {
 
 // Lock or unlock the ballot — ballot items are visually disabled
 // and the vote() function checks liveScanVerified as a hard gate
+let votingStatePollInterval = null;
+
 function setBallotLocked(locked) {
   const items = document.querySelectorAll(".ballot-item");
+  const hwBadge = document.getElementById("hwBadge");
+  const isHardwareMode = hwBadge && hwBadge.innerHTML.includes("Live");
+
   items.forEach(item => {
     if (locked) {
       item.style.opacity = "0.35";
       item.style.pointerEvents = "none";
       item.style.cursor = "not-allowed";
+      item.classList.remove("selected");
     } else {
       item.style.opacity = "1";
-      item.style.pointerEvents = "auto";
-      item.style.cursor = "pointer";
+      if (isHardwareMode) {
+        item.style.pointerEvents = "none"; // Disable mouse clicks in hardware mode
+        item.style.cursor = "default";
+      } else {
+        item.style.pointerEvents = "auto";
+        item.style.cursor = "pointer";
+      }
     }
   });
+
+  if (locked) {
+    if (votingStatePollInterval) {
+      clearInterval(votingStatePollInterval);
+      votingStatePollInterval = null;
+    }
+  } else if (isHardwareMode) {
+    if (!votingStatePollInterval) {
+      votingStatePollInterval = setInterval(async () => {
+        try {
+          const res = await fetch("http://127.0.0.1:5002/stm32/voting-state");
+          if (res.ok) {
+            const data = await res.json();
+            if (data.active) {
+              items.forEach(item => {
+                const party = item.getAttribute("data-party") || item.onclick.toString().match(/'([^']+)'/)[1];
+                if (party === data.selected_party) {
+                  item.classList.add("selected");
+                } else {
+                  item.classList.remove("selected");
+                }
+              });
+              if (data.selected_party) {
+                showStatus("voteStatus", `Active voting mode. Selected Party: ${data.selected_party}. Press CONFIRM on STM32 to cast vote. 🔌`, "working");
+              }
+            }
+          }
+        } catch (e) {
+          console.warn("[EVM] Error polling hardware voting-state:", e);
+        }
+      }, 500);
+    }
+  }
 }
 
 function updateSampleDots(count, total) {
@@ -1856,6 +1908,29 @@ function startRegisteredListener() {
     allRegisteredVoters.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
     renderRegisteredTable(allRegisteredVoters);
     updateRegisteredSummary(allRegisteredVoters);
+
+    // Check if the currently verifying voter has voted (e.g. via hardware buttons)
+    if (liveScanVerified && verifiedVoterData) {
+      const activeAadhaar = verifiedVoterData.id || verifiedVoterData.aadhaar || "";
+      const updatedDoc = allRegisteredVoters.find(v => v.id === activeAadhaar);
+      if (updatedDoc && updatedDoc.flag === 1) {
+        const party = updatedDoc.voted_party || "Unknown";
+        showStatus("voteStatus", `Vote Cast Successfully for ${party} (via EVM Button) ✔`, "success");
+        
+        // Clear states
+        liveScanVerified = false;
+        verifiedVoterData = null;
+        setBallotLocked(true);
+        const inputEl = document.getElementById("voteAadhaar");
+        if (inputEl) inputEl.value = "";
+        const sensorEl = document.getElementById("verifyFpSensor");
+        if (sensorEl) sensorEl.className = "fp-sensor";
+        const statusEl = document.getElementById("fpLiveStatus");
+        if (statusEl) statusEl.innerText = "";
+        
+        updateStatsDisplay();
+      }
+    }
   }, (err) => {
     console.error("[EVM] Registered listener error:", err);
     renderRegisteredFromLocal();

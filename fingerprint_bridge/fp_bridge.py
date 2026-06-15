@@ -86,6 +86,7 @@ def init_serial():
 # ==========================
 
 _match_results:   dict = {}  # { aadhaar: { "status": "verified"|"failed", "ts": epoch } }
+_voting_state:    dict = { "active": False, "aadhaar": "", "selected_party": "" }
 _sample_consents: dict = {}  # { aadhaar: { n: "pending"|"approved"|"denied" } }
 _template_store:  dict = {}  # { aadhaar: { "1": base64, "2": base64, ... } }
 r307_sensor_status     = "unknown"
@@ -197,6 +198,8 @@ def parse_uart_line(line: str):
             aadhaar = parts.get("ID")
             if aadhaar:
                 _handle_match_ok(aadhaar)
+                global _voting_state
+                _voting_state = { "active": True, "aadhaar": aadhaar, "selected_party": "AB" }
             return
 
         # ── MATCH_FAIL / VERIFY_FAIL  ─────────────────────────────────
@@ -244,6 +247,8 @@ def parse_uart_line(line: str):
                 print(f"[FIRESTORE] Vote — Aadhaar {aadhaar} → {party}")
 
             _cast(transaction)
+            global _voting_state
+            _voting_state = { "active": False, "aadhaar": "", "selected_party": "" }
             return
 
         # ── ERROR  ────────────────────────────────────────────────────
@@ -252,12 +257,17 @@ def parse_uart_line(line: str):
 
         # ── STATUS  ───────────────────────────────────────────────────
         if line.startswith("STATUS"):
-            global r307_sensor_status
+            global r307_sensor_status, _voting_state
             print(f"[STM32 STATUS] {line}")
             if line.startswith("STATUS:SENSOR_CONNECTED"):
                 r307_sensor_status = "connected"
             elif line.startswith("STATUS:SENSOR_DISCONNECTED"):
                 r307_sensor_status = "disconnected"
+            elif "SELECTED_PARTY=" in line:
+                p = line.split("SELECTED_PARTY=")[1].strip()
+                _voting_state["selected_party"] = p
+            elif "VOTING_MODE_ACTIVE" in line:
+                _voting_state["active"] = True
 
     except Exception as e:
         print(f"[PARSE ERROR] Could not process line '{line}': {e}")
@@ -859,6 +869,11 @@ def ack_vote():
 # ==========================
 # Health Check
 # ==========================
+
+@app.route("/stm32/voting-state", methods=["GET"])
+def voting_state_api():
+    return jsonify(_voting_state)
+
 
 @app.route("/status", methods=["GET"])
 def status():

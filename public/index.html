@@ -32,9 +32,7 @@
         <button class="tab-btn" onclick="switchTab('voted-tab')">
           ✅ Completed Votes
         </button>
-        <button class="tab-btn" onclick="switchTab('dev-hub-tab')">
-          🔌 Developer Hub
-        </button>
+
       </nav>
 
       <div style="display: flex; gap: 10px;">
@@ -208,7 +206,7 @@
           </div>
 
           <div class="ballot-list">
-            <div class="ballot-item" onclick="vote('AB')">
+            <div class="ballot-item" data-party="AB" onclick="vote('AB')">
               <div class="party-info">
                 <div class="party-logo">AB</div>
                 <div class="party-name">AB Democratic Party</div>
@@ -216,7 +214,7 @@
               <div class="vote-btn-pill">Cast Vote</div>
             </div>
 
-            <div class="ballot-item" onclick="vote('CD')">
+            <div class="ballot-item" data-party="CD" onclick="vote('CD')">
               <div class="party-info">
                 <div class="party-logo">CD</div>
                 <div class="party-name">CD Alliance Front</div>
@@ -224,7 +222,7 @@
               <div class="vote-btn-pill">Cast Vote</div>
             </div>
 
-            <div class="ballot-item" onclick="vote('EF')">
+            <div class="ballot-item" data-party="EF" onclick="vote('EF')">
               <div class="party-info">
                 <div class="party-logo">EF</div>
                 <div class="party-name">EF Progressive Front</div>
@@ -232,7 +230,7 @@
               <div class="vote-btn-pill">Cast Vote</div>
             </div>
 
-            <div class="ballot-item" onclick="vote('GH')">
+            <div class="ballot-item" data-party="GH" onclick="vote('GH')">
               <div class="party-info">
                 <div class="party-logo">GH</div>
                 <div class="party-name">GH United Coalition</div>
@@ -240,7 +238,7 @@
               <div class="vote-btn-pill">Cast Vote</div>
             </div>
 
-            <div class="ballot-item" onclick="vote('NOTA')">
+            <div class="ballot-item" data-party="NOTA" onclick="vote('NOTA')">
               <div class="party-info">
                 <div class="party-logo" style="background: rgba(239, 68, 68, 0.1); color: var(--danger); border-color: rgba(239, 68, 68, 0.2);">X</div>
                 <div class="party-name" style="color: var(--text-muted);">None of the Above (NOTA)</div>
@@ -455,125 +453,7 @@
       </div>
     </section>
 
-    <!-- ==============================================
-         TAB 6: DEVELOPER HUB
-         ============================================== -->
-    <section id="dev-hub-tab" class="view-section">
-      <div class="alert-info">
-        <svg viewBox="0 0 24 24"><path d="M12,2A10,10 0 1,0 22,12A10,10 0 0,0 12,2M12,17A1,1 0 1,1 13,16A1,1 0 0,1 12,17M13,12H11V7H13V12Z"/></svg>
-        <div>
-          <strong>Developer Portal:</strong> Configure your EVM deployment settings below, select your stack, and click <strong>Copy Prompt</strong> to paste directly into Claude (chat.claude.ai) to instantly generate integration components, or copy the template code directly.
-        </div>
-      </div>
 
-      <div class="config-panel">
-        <div class="form-group" style="margin-bottom: 0;">
-          <label for="devApiUrl">EVM API Server URL</label>
-          <input type="text" id="devApiUrl" value="http://localhost:5002" oninput="updateDevHubContent()">
-        </div>
-        <div class="form-group" style="margin-bottom: 0;">
-          <label for="devTechStack">Platform / Framework Name</label>
-          <input type="text" id="devTechStack" value="React" oninput="updateDevHubContent()">
-        </div>
-        <div class="form-group" style="margin-bottom: 0;">
-          <label for="devIntegrationType">Integration Type</label>
-          <select id="devIntegrationType" onchange="updateDevHubContent()">
-            <option>Modal</option>
-            <option>Dedicated Page</option>
-            <option>Component</option>
-          </select>
-        </div>
-        <div class="form-group" style="margin-bottom: 0;">
-          <label for="devTheme">Visual Theme Styles</label>
-          <select id="devTheme" onchange="updateDevHubContent()">
-            <option>Dark Mode</option>
-            <option>Light Mode</option>
-            <option>Match Site Styling</option>
-          </select>
-        </div>
-      </div>
-
-      <div class="dev-hub-layout">
-        
-        <!-- Sidebar Platform selector -->
-        <div class="dev-sidebar">
-          <button class="platform-btn active" onclick="selectPlatform('react')">
-            ⚛️ React Component
-          </button>
-          <button class="platform-btn" onclick="selectPlatform('wordpress')">
-            📝 WordPress Plugin
-          </button>
-          <button class="platform-btn" onclick="selectPlatform('shortcode')">
-            🧩 WP [Shortcode]
-          </button>
-          <button class="platform-btn" onclick="selectPlatform('woocommerce')">
-            🛍️ WooCommerce Hook
-          </button>
-          <button class="platform-btn" onclick="selectPlatform('nextjs')">
-            ▲ Next.js App
-          </button>
-          <button class="platform-btn" onclick="selectPlatform('vue')">
-            🟢 Vue Component
-          </button>
-          <button class="platform-btn" onclick="selectPlatform('angular')">
-            🔴 Angular Setup
-          </button>
-          <button class="platform-btn" onclick="selectPlatform('shopify')">
-            🛒 Shopify Liquid
-          </button>
-          <button class="platform-btn" onclick="selectPlatform('html')">
-            🌐 Static HTML Modal
-          </button>
-          <button class="platform-btn" onclick="selectPlatform('drupal')">
-            💧 Drupal Module
-          </button>
-          <button class="platform-btn" onclick="selectPlatform('api')">
-            🔌 API-Only Client
-          </button>
-          <button class="platform-btn" onclick="selectPlatform('custom')">
-            ⚡ Custom System
-          </button>
-          <button class="platform-btn" onclick="selectPlatform('general')">
-            🌎 General Integration
-          </button>
-          <button class="platform-btn" onclick="selectPlatform('modal')">
-            🔳 Any Tech Modal
-          </button>
-        </div>
-
-        <!-- Output display panels -->
-        <div class="dev-main">
-          
-          <!-- Claude Prompt copy block -->
-          <div class="card" style="padding: 1.5rem;">
-            <div class="code-header">
-              <div class="code-title">📋 Customized Prompt for Claude (chat.claude.ai)</div>
-              <button class="btn btn-secondary btn-copy" onclick="copyToClipboard('promptBlock')" style="width: auto; padding: 0.35rem 0.8rem;">
-                Copy Prompt
-              </button>
-            </div>
-            <div class="code-block-container">
-              <pre id="promptBlock" style="white-space: pre-wrap; max-height: 250px; overflow-y: auto;"></pre>
-            </div>
-          </div>
-
-          <!-- Code Snippet copy block -->
-          <div class="card" style="padding: 1.5rem;">
-            <div class="code-header">
-              <div class="code-title">💻 Direct Integration Code Template</div>
-              <button class="btn btn-secondary btn-copy" onclick="copyToClipboard('codeBlock')" style="width: auto; padding: 0.35rem 0.8rem;">
-                Copy Code
-              </button>
-            </div>
-            <div class="code-block-container">
-              <pre id="codeBlock" style="max-height: 400px; overflow-y: auto;"></pre>
-            </div>
-          </div>
-
-        </div>
-
-      </div>
-    </section>
 
   </main>
 

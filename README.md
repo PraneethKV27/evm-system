@@ -36,8 +36,8 @@ SecEVM is a secure, web-based Electronic Voting Machine built around an **R307 o
 - Aadhaar-based voter lookup with real-time pre-verification card
 - Requires **5 enrolled R307 templates** (`fp_templates`) before verify can start
 - Biometric verification: all 5 stored templates loaded into STM32 via `LOAD_TEMPLATE` (with inter-command delay), then `CMD_VERIFY` triggers R307 `Search` across all pages
-- **80 % confidence threshold enforced in firmware** — match score must be ≥ 52428 (80 % of 65535). Below that → `MATCH_FAIL:REASON=SCORE_LOW` and ballot stays locked
-- Ballot unlocked **only** on hardware `MATCH_OK` — no software auto-verify bypass
+- **80% confidence threshold enforced in firmware** — match score must be ≥ 52428 (80% of 65535). Below that → `MATCH_FAIL:REASON=SCORE_LOW` and ballot stays locked
+- **Direct Hardware Button Voting** — once the ballot is unlocked, voting must be cast using one of the **5 dedicated physical push buttons** on the STM32 board (PORTB `PB1` to `PB5` representing the parties and NOTA). On-screen clicking is disabled to enforce physical vote integrity.
 - One-vote-per-voter enforced via Firestore atomic transaction
 
 ### 📊 Stats Dashboard
@@ -45,9 +45,6 @@ SecEVM is a secure, web-based Electronic Voting Machine built around an **R307 o
 
 ### 👥 Registered Voters & ✅ Completed Votes
 - Live Firebase `onSnapshot` tables with search, filter, and summary stats
-
-### 🔌 Developer Hub
-- Integration code templates for React, Next.js, Vue, Angular, WordPress, Shopify, and more
 
 ---
 
@@ -412,7 +409,6 @@ USART1 (R307): 57600 baud — USART2 (PC bridge): 115200 baud
 | 📊 Stats Dashboard | Real-time vote results |
 | 👥 Registered Voters | Live Firebase table |
 | ✅ Completed Votes | Live Firebase table |
-| 🔌 Developer Hub | Integration code + AI prompt generator |
 
 ## 💾 Permanent Backend Storage
 
