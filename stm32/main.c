@@ -68,9 +68,6 @@ static uint8_t currentSample  = 0;   /* 1-based sample being processed      */
 static uint8_t consentGranted = 0;   /* set by ProcessRxLine when ACK arrives */
 static uint8_t enrollAborted  = 0;   /* set when ABORT_ENROLL received        */
 
-/* In-RAM template cache for loaded templates (verification) */
-static uint8_t  loadedTemplates[MAX_TEMPLATES][TEMPLATE_BYTES];
-static uint8_t  loadedCount = 0;
 
 /* PC→STM32 receive buffer */
 static uint8_t rxByte;
@@ -617,7 +614,7 @@ static void ProcessRxLine(const char *line)
             }
         }
 
-        if (loadedCount < MAX_TEMPLATES) loadedCount++;
+
         char loadDoneMsg[48];
         snprintf(loadDoneMsg, sizeof(loadDoneMsg), "Loaded template %d (%u bytes)\r\n", page, (unsigned)rawLen);
         Debug_Print(loadDoneMsg);
@@ -662,7 +659,7 @@ static void ProcessRxLine(const char *line)
     if (strncmp(line, "CMD_VERIFY:", 11) == 0) {
         strncpy(currentAadhaar, line + 11, AADHAAR_LEN);
         currentAadhaar[AADHAAR_LEN] = '\0';
-        loadedCount = 0;
+
         sysState = STATE_VERIFY;
         return;
     }
