@@ -195,6 +195,33 @@ async function startHardwarePolling() {
 
 // Update database badge in UI
 document.addEventListener("DOMContentLoaded", () => {
+  // Check if opened via file:// protocol directly
+  if (window.location.protocol === "file:") {
+    const overlay = document.createElement("div");
+    overlay.id = "fileProtocolErrorOverlay";
+    overlay.style.cssText = [
+      "position:fixed;top:0;left:0;width:100%;height:100%;z-index:999999;",
+      "background:rgba(15,23,42,0.95);backdrop-filter:blur(12px);",
+      "display:flex;flex-direction:column;justify-content:center;align-items:center;",
+      "color:#f8fafc;font-family:system-ui,-apple-system,sans-serif;padding:30px;text-align:center;"
+    ].join("");
+    overlay.innerHTML = `
+      <div style="background:#1e293b;border:1px solid #ef4444;padding:40px;border-radius:16px;max-width:550px;box-shadow:0 20px 25px -5px rgba(0,0,0,0.5);">
+        <div style="font-size:4rem;margin-bottom:20px;">❌</div>
+        <h2 style="color:#f8fafc;margin-bottom:15px;font-size:1.6rem;">Invalid Launch Method Detected</h2>
+        <p style="color:#94a3b8;font-size:1rem;line-height:1.6;margin-bottom:25px;">
+          You opened <code style="background:#0f172a;padding:3px 8px;border-radius:4px;color:#ef4444;">index.html</code> directly from the folder. Browser security blocks hardware connections when loaded this way.
+        </p>
+        <div style="background:#7f1d1d;border:1px solid #b91c1c;color:#fecaca;padding:15px;border-radius:8px;font-size:0.95rem;font-weight:600;margin-bottom:25px;">
+          👉 Please close this browser tab and double-click the "SecEVM.bat" file in your project folder instead!
+        </div>
+        <p style="color:#64748b;font-size:0.85rem;">This automatically starts the backend server on port 3010 and safely connects your STM32 hardware.</p>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    return;
+  }
+
   const badge = document.getElementById("dbBadge");
   if (badge) {
     if (isFirebaseMode) {
@@ -353,7 +380,7 @@ let verifiedVoterData = null;
 // AND whether the STM32 hardware is actually connected
 async function checkBridgeStatus() {
   try {
-    const res = await fetch("http://127.0.0.1:5002/status", { method: "GET" });
+    const res = await fetch("http://localhost:5002/status", { method: "GET" });
     if (!res.ok) return { bridge: false, hardware: false };
     const data = await res.json();
     return {
@@ -394,7 +421,7 @@ async function pollUntil(timeoutMs, intervalMs, checkFn) {
 
 async function fetchStoredTemplates(aadhaar) {
   try {
-    const res  = await fetch(`http://127.0.0.1:5002/stm32/templates?aadhaar=${aadhaar}`);
+    const res  = await fetch(`http://localhost:5002/stm32/templates?aadhaar=${aadhaar}`);
     const data = await res.json();
     return data.found ? data.templates : null;
   } catch (_) {
@@ -406,7 +433,7 @@ async function waitForSampleReady(aadhaar, sampleIndex) {
   return pollUntil(600000, 500, async () => {
     try {
       const res  = await fetch(
-        `http://127.0.0.1:5002/stm32/sample-consent?aadhaar=${aadhaar}&sample=${sampleIndex}`
+        `http://localhost:5002/stm32/sample-consent?aadhaar=${aadhaar}&sample=${sampleIndex}`
       );
       const data = await res.json();
       return data.status === "pending" ? true : null;
@@ -427,7 +454,7 @@ async function waitForR307Template(aadhaar, sampleIndex) {
 async function waitForEnrollComplete(aadhaar) {
   return pollUntil(120000, 1000, async () => {
     try {
-      const res  = await fetch(`http://127.0.0.1:5002/stm32/enroll-status?aadhaar=${aadhaar}`);
+      const res  = await fetch(`http://localhost:5002/stm32/enroll-status?aadhaar=${aadhaar}`);
       const data = await res.json();
       if (data.status === "complete") return "complete";
       if (data.status === "aborted") return "aborted";
@@ -644,7 +671,7 @@ window.startEnrollment = async function () {
 
   // Kick off STM32 enrollment
   try {
-    await fetch("http://127.0.0.1:5002/stm32/cmd-enroll", {
+    await fetch("http://localhost:5002/stm32/cmd-enroll", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ aadhaar })
@@ -670,7 +697,7 @@ window.startEnrollment = async function () {
       fpSensor.className = "fp-sensor error";
       showStatus("fpStatus", `Enrollment aborted at sample ${sampleIndex} — voter declined ❌`, "error");
       updateSampleDots(sampleIndex - 1, totalSamples);
-      fetch("http://127.0.0.1:5002/stm32/deny-sample", {
+      fetch("http://localhost:5002/stm32/deny-sample", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ aadhaar, sample: sampleIndex })
@@ -679,7 +706,7 @@ window.startEnrollment = async function () {
     }
 
     try {
-      await fetch("http://127.0.0.1:5002/stm32/ack-sample", {
+      await fetch("http://localhost:5002/stm32/ack-sample", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ aadhaar, sample: sampleIndex })
@@ -728,7 +755,7 @@ window.startEnrollment = async function () {
   fpTemplates = storedTemplates;
 
   try {
-    await fetch("http://127.0.0.1:5002/stm32/store-templates", {
+    await fetch("http://localhost:5002/stm32/store-templates", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ aadhaar, templates: fpTemplates })
@@ -774,7 +801,7 @@ window.startEnrollment = async function () {
     if (isFirebaseMode) {
       await setDoc(doc(db, "VoterDB", aadhaar), voterPayload);
       if (!isDemoMode) {
-        fetch("http://127.0.0.1:5002/stm32/send-voter-info", {
+        fetch("http://localhost:5002/stm32/send-voter-info", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ aadhaar, name: voterPayload.name, age: voterPayload.age, gender: voterPayload.gender })
@@ -905,7 +932,7 @@ window.startFingerprintCheck = async function () {
   }
 
   try {
-    const verifyRes = await fetch("http://127.0.0.1:5002/stm32/cmd-verify", {
+    const verifyRes = await fetch("http://localhost:5002/stm32/cmd-verify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ aadhaar, templates: voterTemplates })
@@ -934,7 +961,7 @@ window.startFingerprintCheck = async function () {
     const timer = setInterval(async () => {
       elapsed += POLL_INTERVAL;
       try {
-        const res  = await fetch(`http://127.0.0.1:5002/stm32/match-status?aadhaar=${aadhaar}`);
+        const res  = await fetch(`http://localhost:5002/stm32/match-status?aadhaar=${aadhaar}`);
         const data = await res.json();
         if (data.status === "verified") { clearInterval(timer); resolve({ result: "verified", reason: null }); }
         else if (data.status === "failed") { clearInterval(timer); resolve({ result: "failed", reason: data.reason || null }); }
@@ -1066,7 +1093,7 @@ window.vote = async function (party) {
     // Notify STM32 that vote was recorded
     const { bridge: bridgeUp } = await checkBridgeStatus();
     if (bridgeUp) {
-      fetch("http://127.0.0.1:5002/stm32/ack-vote", {
+      fetch("http://localhost:5002/stm32/ack-vote", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ aadhaar, party })
@@ -1088,6 +1115,91 @@ window.vote = async function (party) {
     showStatus("voteStatus", "Error processing vote. Please try again ❌", "error");
   }
 };
+
+// ================= Cast Hardware Vote (via Serial Port Event) =================
+async function castHardwareVote(aadhaar, party) {
+  showStatus("voteStatus", "Recording secure hardware vote in database...", "working");
+  try {
+    if (isFirebaseMode) {
+      await runTransaction(db, async (tx) => {
+        const voterRef = doc(db, "VoterDB", aadhaar);
+        const partyRef = doc(db, "PartyDB", party);
+        const metaRef  = doc(db, "PartyDB", "_meta");
+
+        const voterSnap = await tx.get(voterRef);
+        const partySnap = await tx.get(partyRef);
+        const metaSnap  = await tx.get(metaRef);
+
+        if (!voterSnap.exists() || voterSnap.data().flag === 1) {
+          throw new Error("Already voted");
+        }
+
+        // Update Voter Status
+        tx.update(voterRef, {
+          flag: 1,
+          voted_party: party,
+          voted_at: new Date().toISOString()
+        });
+
+        // Update Party Stats
+        if (partySnap.exists()) {
+          tx.update(partyRef, {
+            votes: (partySnap.data().votes || 0) + 1,
+            last_updated: new Date().toISOString()
+          });
+        } else {
+          tx.set(partyRef, {
+            votes: 1,
+            last_updated: new Date().toISOString()
+          });
+        }
+
+        // Update Meta Total Votes
+        if (metaSnap.exists()) {
+          tx.update(metaRef, {
+            total_votes: (metaSnap.data().total_votes || 0) + 1,
+            last_updated: new Date().toISOString()
+          });
+        } else {
+          tx.set(metaRef, {
+            total_votes: 1,
+            last_updated: new Date().toISOString()
+          });
+        }
+      });
+    } else {
+      await mockDB.castVote(aadhaar, party);
+    }
+
+    showStatus("voteStatus", `Vote Cast Successfully for ${party} ✔`, "success");
+
+    // Notify STM32 that vote was recorded in database
+    fetch("http://localhost:5002/stm32/ack-vote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ aadhaar, party })
+    }).catch(() => {});
+
+    // Reset Server Voting State
+    fetch("http://localhost:5002/stm32/clear-voting-state", {
+      method: "POST"
+    }).catch(() => {});
+
+    // Clear states
+    liveScanVerified = false;
+    verifiedVoterData = null;
+    setBallotLocked(true);
+    document.getElementById("voteAadhaar").value = "";
+    document.getElementById("verifyFpSensor").className = "fp-sensor";
+    document.getElementById("fpLiveStatus").innerText = "";
+    
+    // Update stats preview if visible
+    updateStatsDisplay();
+  } catch (err) {
+    console.error(err);
+    showStatus("voteStatus", `Failed to record hardware vote: ${err.message} ❌`, "error");
+  }
+}
 
 // ================= Stats Calculations =================
 async function updateStatsDisplay() {
@@ -1153,20 +1265,29 @@ function setBallotLocked(locked) {
     if (!votingStatePollInterval) {
       votingStatePollInterval = setInterval(async () => {
         try {
-          const res = await fetch("http://127.0.0.1:5002/stm32/voting-state");
+          const res = await fetch("http://localhost:5002/stm32/voting-state");
           if (res.ok) {
             const data = await res.json();
+            if (data.voted) {
+              clearInterval(votingStatePollInterval);
+              votingStatePollInterval = null;
+              const aadhaar = document.getElementById("voteAadhaar").value.trim();
+              await castHardwareVote(aadhaar, data.voted_party);
+              return;
+            }
             if (data.active) {
               items.forEach(item => {
                 const party = item.getAttribute("data-party") || item.onclick.toString().match(/'([^']+)'/)[1];
-                if (party === data.selected_party) {
+                if (data.selected_party && party === data.selected_party) {
                   item.classList.add("selected");
                 } else {
                   item.classList.remove("selected");
                 }
               });
               if (data.selected_party) {
-                showStatus("voteStatus", `Active voting mode. Selected Party: ${data.selected_party}. Press CONFIRM on STM32 to cast vote. 🔌`, "working");
+                showStatus("voteStatus", `Active voting mode. Selected Party: ${data.selected_party}. Press physical button on STM32 to cast vote. 🔌`, "working");
+              } else {
+                showStatus("voteStatus", `Active voting mode. Press any physical button on STM32 to cast vote. 🔌`, "working");
               }
             }
           }
@@ -1821,7 +1942,7 @@ window.updateDevHubContent = function () {
   const integrationTypeInput = document.getElementById("devIntegrationType");
   const themeInput = document.getElementById("devTheme");
 
-  const apiUrl = apiUrlInput ? apiUrlInput.value.trim() : "http://127.0.0.1:5002";
+  const apiUrl = apiUrlInput ? apiUrlInput.value.trim() : "http://localhost:5002";
   const techStack = techStackInput ? techStackInput.value.trim() : "React";
   const integrationType = integrationTypeInput ? integrationTypeInput.value : "Modal";
   const theme = themeInput ? themeInput.value : "Dark";
@@ -2002,6 +2123,9 @@ function renderRegisteredTable(voters) {
           ? `<span class="badge badge-primary">✔ Voted (${v.voted_party || "?"})</span>`
           : `<span class="badge badge-accent">⏳ Pending</span>`}</td>
         <td style="color:var(--text-muted); font-size:0.8rem;">${formatDate(v.registered_at) !== "—" ? formatDate(v.registered_at) : "—"}</td>
+        <td>
+          <button class="btn btn-sm btn-accent" style="padding: 2px 8px; font-size: 0.75rem;" onclick="resetVoterVoteStatus('${v.id}')">Reset Vote</button>
+        </td>
       </tr>`;
   }).join("");
 }
@@ -2149,4 +2273,48 @@ window.switchTab = function (tabId) {
   _origSwitchTab(tabId);
   if (tabId === "registered-tab") startRegisteredListener();
   if (tabId === "voted-tab")      { startRegisteredListener(); startVotedListener(); }
+};
+
+window.resetVoterVoteStatus = async function (aadhaar) {
+  if (!confirm(`Are you sure you want to reset the voting status for voter ${aadhaar}?`)) return;
+  try {
+    const voterRef = doc(db, "VoterDB", aadhaar);
+    const metaRef = doc(db, "PartyDB", "_meta");
+    
+    await runTransaction(db, async (tx) => {
+      const voterSnap = await tx.get(voterRef);
+      if (!voterSnap.exists()) {
+        throw new Error("Voter does not exist!");
+      }
+      
+      const voterData = voterSnap.data();
+      const votedParty = voterData.voted_party;
+      const hasVoted = voterData.flag === 1;
+      
+      if (hasVoted && votedParty) {
+        const partyRef = doc(db, "PartyDB", votedParty);
+        const partySnap = await tx.get(partyRef);
+        const metaSnap = await tx.get(metaRef);
+        
+        if (partySnap.exists()) {
+          const count = partySnap.data().votes || 0;
+          tx.update(partyRef, { votes: Math.max(0, count - 1) });
+        }
+        if (metaSnap.exists()) {
+          const total = metaSnap.data().total_votes || 0;
+          tx.update(metaRef, { total_votes: Math.max(0, total - 1) });
+        }
+      }
+      
+      tx.update(voterRef, {
+        flag: 0,
+        voted_party: ""
+      });
+    });
+    
+    alert(`Voting status reset successfully for Aadhaar: ${aadhaar}`);
+  } catch (err) {
+    console.error("Error resetting voter status:", err);
+    alert("Error resetting voter status: " + err.message);
+  }
 };

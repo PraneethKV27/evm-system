@@ -22,6 +22,8 @@ const templateStore = {};
 const matchResults   = {};  // { aadhaar: { status, ts } }
 const enrollResults  = {};  // { aadhaar: { status:"complete"|"aborted", ts } }
 const sampleConsents = {};  // { aadhaar: { n: "pending"|"approved"|"denied" } }
+let votingState = { active: false, aadhaar: "", selected_party: "", voted: false, voted_party: "" };
+const templateLoadResolvers = {};
 
 const DB_FILE = path.join(__dirname, "fingerprint_db.json");
 const TEMPLATE_FILE = path.join(__dirname, "template_store.json");
@@ -246,6 +248,7 @@ function handleUARTLine(line) {
     const id = parts["ID"];
     if (id) {
       matchResults[id] = { status: "verified", ts: Date.now() };
+      votingState = { active: true, aadhaar: id, selected_party: "", voted: false, voted_party: "" };
       console.log(`[MATCH] VERIFIED for ${id}`);
     }
     return;
@@ -258,6 +261,19 @@ function handleUARTLine(line) {
     if (id) {
       matchResults[id] = { status: "failed", reason, ts: Date.now() };
       console.log(`[MATCH] FAILED for ${id} — reason: ${reason}`);
+    }
+    return;
+  }
+
+  // ── VOTE_CAST  ────────────────────────────────────────────────────
+  if (line.startsWith("VOTE_CAST")) {
+    const id = parts["ID"];
+    const party = parts["PARTY"];
+    if (id && party) {
+      votingState.voted = true;
+      votingState.voted_party = party;
+      votingState.active = false;
+      console.log(`[VOTE] Vote received from STM32: ${id} -> ${party}`);
     }
     return;
   }
@@ -275,12 +291,25 @@ function handleUARTLine(line) {
     return;
   }
 
+  if (line.includes("Loaded template")) {
+    const match = line.match(/Loaded template (\d+)/i);
+    if (match) {
+      const page = parseInt(match[1]);
+      if (templateLoadResolvers[page]) {
+        console.log(`[HANDSHAKE] Resolved template load for page ${page}`);
+        templateLoadResolvers[page]();
+      }
+    }
+  }
+
   if (line.startsWith("STATUS")) {
     console.log(`[STM32 STATUS] ${line}`);
     if (line.startsWith("STATUS:SENSOR_CONNECTED")) {
       r307SensorStatus = "connected";
     } else if (line.startsWith("STATUS:SENSOR_DISCONNECTED")) {
       r307SensorStatus = "disconnected";
+    } else if (line.includes("VOTING_MODE_ACTIVE")) {
+      votingState.active = true;
     }
   }
 }
@@ -594,10 +623,19 @@ app.post("/stm32/cmd-verify", async (req, res) => {
     if (!b64) {
       return res.status(400).json({ status: "error", message: `Missing template ${n}` });
     }
+    const ackPromise = new Promise((resolve) => {
+      templateLoadResolvers[n] = resolve;
+      setTimeout(() => {
+        console.log(`[VERIFY] Handshake timeout for template ${n} — continuing`);
+        resolve();
+      }, 500);
+    });
     sendToSTM32(`LOAD_TEMPLATE:${n}:${b64}`);
-    await delay(80);
+    await ackPromise;
+    delete templateLoadResolvers[n];
   }
   console.log(`[VERIFY] Loaded ${REQUIRED_FP_SAMPLES} R307 templates for ${aadhaar}`);
+  await delay(150);
 
   sendToSTM32(`CMD_VERIFY:${aadhaar}`);
   res.json({
@@ -686,6 +724,18 @@ app.post("/fingerprint/verify", (req, res) => {
     source:           "demo",
     templatesChecked: Object.keys(storedTemplates).length || mockSamples.length
   });
+});
+
+// ===============================
+// VOTING STATE POLL ENDPOINTS
+// ===============================
+app.get("/stm32/voting-state", (req, res) => {
+  res.json(votingState);
+});
+
+app.post("/stm32/clear-voting-state", (req, res) => {
+  votingState = { active: false, aadhaar: "", selected_party: "", voted: false, voted_party: "" };
+  res.json({ status: "ok" });
 });
 
 // ===============================

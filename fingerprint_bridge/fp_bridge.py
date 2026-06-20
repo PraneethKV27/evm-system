@@ -199,7 +199,7 @@ def parse_uart_line(line: str):
             if aadhaar:
                 _handle_match_ok(aadhaar)
                 global _voting_state
-                _voting_state = { "active": True, "aadhaar": aadhaar, "selected_party": "AB" }
+                _voting_state = { "active": True, "aadhaar": aadhaar, "selected_party": "" }
             return
 
         # ── MATCH_FAIL / VERIFY_FAIL  ─────────────────────────────────

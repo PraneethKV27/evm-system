@@ -31,16 +31,12 @@ typedef enum {
 #define AADHAAR_LEN      12
 #define TEMPLATE_BYTES   512    /* R307 CharBuffer size in bytes          */
 #define B64_ENCODED_LEN  700    /* ceil(512/3)*4 + overhead               */
-#define RX_BUF_SIZE      256    /* PC → STM32 receive buffer              */
+#define RX_BUF_SIZE      1024    /* PC → STM32 receive buffer              */
 #define MAX_TEMPLATES    5
 /* Match score threshold — R307 Search returns a 16-bit confidence score.
    Maximum is 0xFFFF (65535). We require ≥ 80% of max = 52428.             */
-#define MATCH_SCORE_THRESHOLD  52428U   /* 80% of 65535 */
+#define MATCH_SCORE_THRESHOLD  50U   /* Typical R307 match score threshold */
 /* USER CODE END PD */
-
-/* Private macro -------------------------------------------------------------*/
-/* USER CODE BEGIN PM */
-/* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
 UART_HandleTypeDef huart1;
@@ -53,11 +49,14 @@ static char    currentAadhaar[AADHAAR_LEN + 1] = {0};
 static uint8_t currentSample  = 0;   /* 1-based sample being processed      */
 static uint8_t consentGranted = 0;   /* set by ProcessRxLine when ACK arrives */
 static uint8_t enrollAborted  = 0;   /* set when ABORT_ENROLL received        */
-/* PC→STM32 receive buffer */
-static uint8_t rxByte;
-static char    rxLine[RX_BUF_SIZE];
-static uint8_t rxIdx      = 0;
-static uint8_t rxLineReady = 0;
+
+
+/* PC→STM32 receive buffer (Global variables for ISR access) */
+uint8_t rxByte;
+char    rxLine[RX_BUF_SIZE];
+uint8_t rxIdx      = 0;
+volatile uint8_t rxLineReady = 0;
+
 /* Stored voter info */
 static char voterName[64]   = "";
 static char voterAge[4]     = "";
@@ -96,9 +95,11 @@ static const uint8_t CMD_DN_CHAR[]   = {0xEF,0x01,0xFF,0xFF,0xFF,0xFF,
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_USART1_UART_Init_Baud(uint32_t baudrate);
 static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
 static void     R307_SendCommand(const uint8_t *cmd, uint16_t len);
+static void     R307_ClearErrors(void);
 static uint8_t  R307_ReadResponse(uint8_t *buf, uint16_t len);
 static uint8_t  R307_WaitForFinger(void);
 static uint8_t  R307_CaptureAndConvert(uint8_t slot);
@@ -114,8 +115,6 @@ static void     Debug_Print(const char *msg);
 static void     SendToPC(const char *msg);
 static void     LED_Green_On(void);
 static void     LED_Green_Off(void);
-static void     LED_Red_On(void);
-static void     LED_Red_Off(void);
 static void     Buzzer_Beep(void);
 static void     Buzzer_BeepLong(void);
 static void     ProcessRxLine(const char *line);
@@ -136,22 +135,11 @@ static uint8_t  Btn_NOTA_Pressed(void);
   */
 int main(void)
 {
-  /* USER CODE BEGIN 1 */
-  /* USER CODE END 1 */
-
-  /* MCU Configuration--------------------------------------------------------*/
-
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
 
-  /* USER CODE BEGIN Init */
-  /* USER CODE END Init */
-
   /* Configure the system clock */
   SystemClock_Config();
-
-  /* USER CODE BEGIN SysInit */
-  /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
@@ -161,9 +149,16 @@ int main(void)
   HAL_UART_Receive_IT(&huart2, &rxByte, 1);
   Debug_Print("\r\n=== SecEVM STM32 Ready (multi-template fusion) ===\r\n");
   SendToPC("STATUS:STM32 Ready");
+  
+  // Check sensor connection once at boot to report status to the PC
+  HAL_Delay(500);
+  if (R307_CheckConnection()) {
+      SendToPC("STATUS:SENSOR_CONNECTED");
+  } else {
+      SendToPC("STATUS:SENSOR_DISCONNECTED");
+  }
+  
   sysState = STATE_IDLE;
-  uint32_t lastSensorCheck = 0;
-  uint8_t lastSensorState = 2; // unknown
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -174,19 +169,7 @@ int main(void)
         rxLineReady = 0;
         ProcessRxLine(rxLine);
     }
-    // Check sensor connection every 3 seconds while idle
-    if (sysState == STATE_IDLE && (HAL_GetTick() - lastSensorCheck > 3000)) {
-        lastSensorCheck = HAL_GetTick();
-        uint8_t isConnected = R307_CheckConnection();
-        if (isConnected != lastSensorState) {
-            lastSensorState = isConnected;
-            if (isConnected) {
-                SendToPC("STATUS:SENSOR_CONNECTED");
-            } else {
-                SendToPC("STATUS:SENSOR_DISCONNECTED");
-            }
-        }
-    }
+    // Connection check disabled to prevent flapping states
     switch (sysState)
     {
         case STATE_IDLE:
@@ -210,12 +193,12 @@ int main(void)
             } else if (enrollAborted) {
                 SendToPC("STATUS:Enrollment aborted by voter");
                 Debug_Print("Enrollment aborted.\r\n");
-                LED_Red_On(); HAL_Delay(500); LED_Red_Off();
+                HAL_Delay(500);
                 enrollAborted = 0;
             } else {
                 SendToPC("STATUS:Enrollment failed");
                 Debug_Print("Enrollment failed.\r\n");
-                LED_Red_On(); HAL_Delay(1000); LED_Red_Off();
+                HAL_Delay(1000);
             }
             sysState = STATE_IDLE;
             break;
@@ -235,73 +218,90 @@ int main(void)
                 LED_Green_On(); Buzzer_Beep();
                 HAL_Delay(1000); LED_Green_Off();
 
-                sysState = STATE_VOTING;
-                SendToPC("STATUS:VOTING_MODE_ACTIVE");
-            } else if (result == 0x10) {
-                /* Score below 80% threshold — not a hard sensor fail */
-                char pcMsg[80];
-                snprintf(pcMsg, sizeof(pcMsg),
-                         "MATCH_FAIL ID=%s:REASON=SCORE_LOW", currentAadhaar);
-                SendToPC(pcMsg);
-                LED_Red_On(); Buzzer_BeepLong();
-                HAL_Delay(1000); LED_Red_Off();
-                sysState = STATE_IDLE;
-            } else {
-                char pcMsg[64];
-                snprintf(pcMsg, sizeof(pcMsg), "MATCH_FAIL ID=%s", currentAadhaar);
-                SendToPC(pcMsg);
-                LED_Red_On(); Buzzer_BeepLong();
-                HAL_Delay(1000); LED_Red_Off();
-                sysState = STATE_IDLE;
-            }
-            break;
+            sysState = STATE_VOTING;
+            SendToPC("STATUS:VOTING_MODE_ACTIVE");
+            char debugBtns[80];
+            snprintf(debugBtns, sizeof(debugBtns), "STATUS:DEBUG_BTNS:AB=%d:CD=%d:EF=%d:GH=%d:NOTA=%d",
+                     Btn_AB_Pressed(), Btn_CD_Pressed(), Btn_EF_Pressed(), Btn_GH_Pressed(), Btn_NOTA_Pressed());
+            SendToPC(debugBtns);
+        } else if (result == 0x10) {
+            /* Score below 80% threshold — not a hard sensor fail */
+            char pcMsg[80];
+            snprintf(pcMsg, sizeof(pcMsg),
+                     "MATCH_FAIL ID=%s:REASON=SCORE_LOW", currentAadhaar);
+            SendToPC(pcMsg);
+            Buzzer_BeepLong();
+            HAL_Delay(1000);
+            sysState = STATE_IDLE;
+        } else {
+            char pcMsg[64];
+            snprintf(pcMsg, sizeof(pcMsg), "MATCH_FAIL ID=%s", currentAadhaar);
+            SendToPC(pcMsg);
+            Buzzer_BeepLong();
+            HAL_Delay(1000);
+            sysState = STATE_IDLE;
         }
-        case STATE_VOTING:
-        {
-            // Toggle Green LED to indicate active voting state
-            static uint32_t lastBlink = 0;
-            if (HAL_GetTick() - lastBlink > 500) {
-                lastBlink = HAL_GetTick();
-                HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-            }
-            const char *selected_party = NULL;
-            if (Btn_AB_Pressed()) {
-                selected_party = "AB";
-            } else if (Btn_CD_Pressed()) {
-                selected_party = "CD";
-            } else if (Btn_EF_Pressed()) {
-                selected_party = "EF";
-            } else if (Btn_GH_Pressed()) {
-                selected_party = "GH";
-            } else if (Btn_NOTA_Pressed()) {
-                selected_party = "NOTA";
-            }
-            if (selected_party != NULL) {
-                HAL_Delay(50); // Debounce
-                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET); // reset blink
+        break;
+    }
+    case STATE_VOTING:
+    {
+        // Toggle Green LED to indicate active voting state
+        static uint32_t lastBlink = 0;
+        static uint32_t lastDebug = 0;
+        if (HAL_GetTick() - lastBlink > 500) {
+            lastBlink = HAL_GetTick();
+            HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_6);
+        }
+        if (HAL_GetTick() - lastDebug > 1000) {
+            lastDebug = HAL_GetTick();
+            char debugBtns[80];
+            snprintf(debugBtns, sizeof(debugBtns), "STATUS:DEBUG_BTNS:AB=%d:CD=%d:EF=%d:GH=%d:NOTA=%d",
+                     Btn_AB_Pressed(),
+                     Btn_CD_Pressed(),
+                     Btn_EF_Pressed(),
+                     Btn_GH_Pressed(),
+                     Btn_NOTA_Pressed());
+            SendToPC(debugBtns);
+        }
+        const char *selected_party = NULL;
+        if (Btn_AB_Pressed()) {
+            HAL_Delay(40);
+            if (Btn_AB_Pressed()) selected_party = "AB";
+        } else if (Btn_CD_Pressed()) {
+            HAL_Delay(40);
+            if (Btn_CD_Pressed()) selected_party = "CD";
+        } else if (Btn_EF_Pressed()) {
+            HAL_Delay(40);
+            if (Btn_EF_Pressed()) selected_party = "EF";
+        } else if (Btn_GH_Pressed()) {
+            HAL_Delay(40);
+            if (Btn_GH_Pressed()) selected_party = "GH";
+        } else if (Btn_NOTA_Pressed()) {
+            HAL_Delay(40);
+            if (Btn_NOTA_Pressed()) selected_party = "NOTA";
+        }
+        if (selected_party != NULL) {
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET); // reset blink
 
-                char pcMsg[128];
-                snprintf(pcMsg, sizeof(pcMsg), "VOTE_CAST:ID=%s:PARTY=%s", currentAadhaar, selected_party);
-                SendToPC(pcMsg);
+            char pcMsg[128];
+            snprintf(pcMsg, sizeof(pcMsg), "VOTE_CAST:ID=%s:PARTY=%s", currentAadhaar, selected_party);
+            SendToPC(pcMsg);
 
-                Buzzer_BeepLong();
-                LED_Green_On();
-                HAL_Delay(1000);
-                LED_Green_Off();
+            Buzzer_BeepLong();
+            LED_Green_On();
+            HAL_Delay(1000);
+            LED_Green_Off();
 
-                sysState = STATE_IDLE;
-            }
-            break;
+            sysState = STATE_IDLE;
+        }
+        break;
         }
         default:
             sysState = STATE_IDLE;
             break;
     }
     /* USER CODE END WHILE */
-
-    /* USER CODE BEGIN 3 */
   }
-  /* USER CODE END 3 */
 }
 
 /**
@@ -313,16 +313,11 @@ void SystemClock_Config(void)
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
-  /** Configure the main internal regulator output voltage
-  */
   if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1) != HAL_OK)
   {
     Error_Handler();
   }
 
-  /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_MSI;
   RCC_OscInitStruct.MSIState = RCC_MSI_ON;
   RCC_OscInitStruct.MSICalibrationValue = 0;
@@ -333,8 +328,6 @@ void SystemClock_Config(void)
     Error_Handler();
   }
 
-  /** Initializes the CPU, AHB and APB buses clocks
-  */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_MSI;
@@ -348,20 +341,10 @@ void SystemClock_Config(void)
   }
 }
 
-/**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART1_UART_Init(void)
+static void MX_USART1_UART_Init_Baud(uint32_t baudrate)
 {
-  /* USER CODE BEGIN USART1_Init 0 */
-  /* USER CODE END USART1_Init 0 */
-
-  /* USER CODE BEGIN USART1_Init 1 */
-  /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 57600;
+  huart1.Init.BaudRate = baudrate;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
@@ -370,12 +353,16 @@ static void MX_USART1_UART_Init(void)
   huart1.Init.OverSampling = UART_OVERSAMPLING_16;
   huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
   huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  HAL_UART_DeInit(&huart1);
   if (HAL_UART_Init(&huart1) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN USART1_Init 2 */
-  /* USER CODE END USART1_Init 2 */
+}
+
+static void MX_USART1_UART_Init(void)
+{
+  MX_USART1_UART_Init_Baud(57600);
 }
 
 /**
@@ -385,11 +372,6 @@ static void MX_USART1_UART_Init(void)
   */
 static void MX_USART2_UART_Init(void)
 {
-  /* USER CODE BEGIN USART2_Init 0 */
-  /* USER CODE END USART2_Init 0 */
-
-  /* USER CODE BEGIN USART2_Init 1 */
-  /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
   huart2.Init.BaudRate = 115200;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
@@ -405,6 +387,9 @@ static void MX_USART2_UART_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN USART2_Init 2 */
+  /* Enable USART2 global interrupt in NVIC */
+  HAL_NVIC_SetPriority(USART2_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(USART2_IRQn);
   /* USER CODE END USART2_Init 2 */
 }
 
@@ -416,42 +401,45 @@ static void MX_USART2_UART_Init(void)
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
-  /* USER CODE BEGIN MX_GPIO_Init_1 */
-  /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5|GPIO_PIN_6, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : PA5 PA6 */
-  GPIO_InitStruct.Pin = GPIO_PIN_5|GPIO_PIN_6;
+  /*Configure GPIO pin : PA6 */
+  GPIO_InitStruct.Pin = GPIO_PIN_6;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PB0 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
+  /*Configure GPIO pin : PB6 */
+  GPIO_InitStruct.Pin = GPIO_PIN_6;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PB1 PB2 PB3 PB4 PB5 */
-  GPIO_InitStruct.Pin = GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5;
+  /*Configure GPIO pin : PC7 (AB Button - Active High, Pull-down) */
+  GPIO_InitStruct.Pin = GPIO_PIN_7;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /* USER CODE BEGIN MX_GPIO_Init_2 */
-  /* USER CODE END MX_GPIO_Init_2 */
+  /*Configure GPIO pins : PB0 PB3 PB5 PB10 (CD, EF, GH, NOTA Buttons - Active High, Pull-down) */
+  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_3|GPIO_PIN_5|GPIO_PIN_10;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 }
+
 
 /* USER CODE BEGIN 4 */
 /* ─────────────────────────────────────────────────────────────
@@ -501,6 +489,7 @@ static uint8_t R307_Enroll(const char *aadhaar)
                 rxLineReady = 0;
                 ProcessRxLine(rxLine);
             }
+            R307_ClearErrors();
             if ((HAL_GetTick() - waitStart) > 60000) {
                 Debug_Print("Consent timeout\r\n");
                 return 0x10; /* timeout */
@@ -712,25 +701,67 @@ static void ProcessRxLine(const char *line)
         return;
     }
 }
-/* ─────────────────────────────────────────────────────────────
-   R307 Low-level helpers
-   ───────────────────────────────────────────────────────────── */
+static void R307_ClearErrors(void)
+{
+    __HAL_UART_CLEAR_FLAG(&huart1, UART_CLEAR_OREF | UART_CLEAR_NEF | UART_CLEAR_FEF | UART_CLEAR_PEF);
+    while (__HAL_UART_GET_FLAG(&huart1, UART_FLAG_RXNE)) {
+        volatile uint8_t tmpreg = (uint8_t)(huart1.Instance->RDR & 0xFF);
+        (void)tmpreg;
+    }
+    huart1.ErrorCode = HAL_UART_ERROR_NONE;
+    huart1.RxState = HAL_UART_STATE_READY;
+}
+
 static uint8_t R307_CheckConnection(void)
 {
     uint8_t resp[12];
+    
+    R307_ClearErrors();
     R307_SendCommand(CMD_GEN_IMG, sizeof(CMD_GEN_IMG));
     HAL_StatusTypeDef s = HAL_UART_Receive(&huart1, resp, sizeof(resp), 300);
-    if (s != HAL_OK) return 0;
-    return 1;
+    if (s == HAL_OK) {
+        return 1;
+    }
+    
+    // If it fails, scan all possible baud rates immediately to find the sensor
+    uint32_t bauds[] = {57600, 9600, 115200};
+    for (int i = 0; i < 3; i++) {
+        MX_USART1_UART_Init_Baud(bauds[i]);
+        R307_ClearErrors();
+        R307_SendCommand(CMD_GEN_IMG, sizeof(CMD_GEN_IMG));
+        s = HAL_UART_Receive(&huart1, resp, sizeof(resp), 300);
+        if (s == HAL_OK) {
+            char baudMsg[48];
+            snprintf(baudMsg, sizeof(baudMsg), "STATUS:SENSOR_BAUD_DETECTED:%u", (unsigned)bauds[i]);
+            SendToPC(baudMsg);
+            return 1;
+        }
+    }
+    
+    return 0;
 }
 static void R307_SendCommand(const uint8_t *cmd, uint16_t len)
 {
+    R307_ClearErrors();
     HAL_UART_Transmit(&huart1, (uint8_t *)cmd, len, HAL_MAX_DELAY);
 }
 static uint8_t R307_ReadResponse(uint8_t *buf, uint16_t len)
 {
     HAL_StatusTypeDef s = HAL_UART_Receive(&huart1, buf, len, 2000);
-    if (s != HAL_OK) return 0xFF;
+    if (s != HAL_OK) {
+        char err[48];
+        snprintf(err, sizeof(err), "UART RX Fail: %d\r\n", (int)s);
+        Debug_Print(err);
+        return 0xFF;
+    }
+    // Print the raw bytes received from the sensor to diagnose misalignment/noise
+    if (len >= 12) {
+        char hex[80];
+        snprintf(hex, sizeof(hex), "RX: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+                 buf[0], buf[1], buf[2], buf[3], buf[4], buf[5],
+                 buf[6], buf[7], buf[8], buf[9], buf[10], buf[11]);
+        Debug_Print(hex);
+    }
     return buf[9];
 }
 static uint8_t R307_WaitForFinger(void)
@@ -744,10 +775,6 @@ static uint8_t R307_WaitForFinger(void)
         }
         if (enrollAborted) {
             return 0xFE; // Aborted by PC
-        }
-        if (!R307_CheckConnection()) {
-            SendToPC("STATUS:SENSOR_DISCONNECTED");
-            return 0xFF; // Disconnected
         }
         R307_SendCommand(CMD_GEN_IMG, sizeof(CMD_GEN_IMG));
         uint8_t status = R307_ReadResponse(resp, sizeof(resp));
@@ -764,7 +791,7 @@ static uint8_t R307_WaitForFinger(void)
                 SendToPC("STATUS:SENSOR_ERROR");
             }
         }
-        HAL_Delay(200);
+        HAL_Delay(25);
     }
 }
 static uint8_t R307_CaptureAndConvert(uint8_t slot)
@@ -781,18 +808,51 @@ static uint8_t R307_UploadCharBuffer(uint8_t *outBuf, uint16_t *outLen)
 {
     R307_SendCommand(CMD_UP_CHAR, sizeof(CMD_UP_CHAR));
     uint8_t hdr[12];
-    if (HAL_UART_Receive(&huart1, hdr, sizeof(hdr), 2000) != HAL_OK) return 0xFF;
-    if (hdr[9] != 0x00) return hdr[9];
+    HAL_StatusTypeDef s = HAL_UART_Receive(&huart1, hdr, sizeof(hdr), 2000);
+    if (s != HAL_OK) {
+        char err[64];
+        snprintf(err, sizeof(err), "STATUS:UpChar Hdr RX Fail: %d\r\n", (int)s);
+        Debug_Print(err);
+        return 0xFF;
+    }
+    if (hdr[9] != 0x00) {
+        char err[64];
+        snprintf(err, sizeof(err), "STATUS:UpChar Hdr Code Fail: %02X\r\n", hdr[9]);
+        Debug_Print(err);
+        return hdr[9];
+    }
     uint16_t totalBytes = 0;
     while (totalBytes < TEMPLATE_BYTES) {
         uint8_t pktHdr[9];
-        if (HAL_UART_Receive(&huart1, pktHdr, sizeof(pktHdr), 1000) != HAL_OK) break;
+        s = HAL_UART_Receive(&huart1, pktHdr, sizeof(pktHdr), 1000);
+        if (s != HAL_OK) {
+            char err[64];
+            snprintf(err, sizeof(err), "STATUS:UpChar Pkt Hdr RX Fail: %d (total=%d)\r\n", (int)s, (int)totalBytes);
+            Debug_Print(err);
+            break;
+        }
         uint8_t pktId   = pktHdr[6];
         uint16_t pktLen = ((uint16_t)pktHdr[7] << 8) | pktHdr[8];
-        if (pktLen < 2 || pktLen > 130) break;
+        if (pktLen < 2 || pktLen > 130) {
+            char err[64];
+            snprintf(err, sizeof(err), "STATUS:UpChar Invalid PktLen: %d\r\n", (int)pktLen);
+            Debug_Print(err);
+            break;
+        }
         uint16_t dataLen = pktLen - 2;
-        if (totalBytes + dataLen > TEMPLATE_BYTES) break;
-        if (HAL_UART_Receive(&huart1, outBuf + totalBytes, dataLen, 1000) != HAL_OK) break;
+        if (totalBytes + dataLen > TEMPLATE_BYTES) {
+            char err[64];
+            snprintf(err, sizeof(err), "STATUS:UpChar Buffer Overflow: %d\r\n", (int)(totalBytes + dataLen));
+            Debug_Print(err);
+            break;
+        }
+        s = HAL_UART_Receive(&huart1, outBuf + totalBytes, dataLen, 1000);
+        if (s != HAL_OK) {
+            char err[64];
+            snprintf(err, sizeof(err), "STATUS:UpChar Data RX Fail: %d\r\n", (int)s);
+            Debug_Print(err);
+            break;
+        }
         totalBytes += dataLen;
         uint8_t chk[2];
         HAL_UART_Receive(&huart1, chk, 2, 500);
@@ -825,7 +885,8 @@ static uint8_t R307_DownloadCharBuffer(const uint8_t *data, uint16_t len)
         HAL_UART_Transmit(&huart1, pkt, 9 + chunk + 2, HAL_MAX_DELAY);
         offset += chunk;
     }
-    return 0x00;
+    // Read the final confirmation code of the DnChar command
+    return R307_ReadResponse(resp, sizeof(resp));
 }
 static uint8_t R307_StorePage(uint8_t page)
 {
@@ -903,41 +964,39 @@ static uint16_t Base64Decode(const char *in, uint8_t *out)
    ───────────────────────────────────────────────────────────── */
 static uint8_t Btn_AB_Pressed(void)
 {
-    return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_1) == GPIO_PIN_RESET);
+    return (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_7) == GPIO_PIN_SET);
 }
 static uint8_t Btn_CD_Pressed(void)
 {
-    return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_2) == GPIO_PIN_RESET);
+    return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_10) == GPIO_PIN_SET);
 }
 static uint8_t Btn_EF_Pressed(void)
 {
-    return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3) == GPIO_PIN_RESET);
+    return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_3) == GPIO_PIN_SET);
 }
 static uint8_t Btn_GH_Pressed(void)
 {
-    return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_4) == GPIO_PIN_RESET);
+    return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_5) == GPIO_PIN_SET);
 }
 static uint8_t Btn_NOTA_Pressed(void)
 {
-    return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_5) == GPIO_PIN_RESET);
+    return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_0) == GPIO_PIN_SET);
 }
 /* ─────────────────────────────────────────────────────────────
    LED & Buzzer
    ───────────────────────────────────────────────────────────── */
-static void LED_Green_On(void)  { HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);   }
-static void LED_Green_Off(void) { HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET); }
-static void LED_Red_On(void)    { HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);   }
-static void LED_Red_Off(void)   { HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET); }
+static void LED_Green_On(void)  { HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);   }
+static void LED_Green_Off(void) { HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET); }
 static void Buzzer_Beep(void) {
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
     HAL_Delay(150);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
     HAL_Delay(50);
 }
 static void Buzzer_BeepLong(void) {
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
     HAL_Delay(600);
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
 }
 /* ─────────────────────────────────────────────────────────────
    UART helpers
@@ -970,6 +1029,17 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         HAL_UART_Receive_IT(&huart2, &rxByte, 1);
     }
 }
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART2) {
+        __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_NEF | UART_CLEAR_FEF | UART_CLEAR_PEF);
+        volatile uint32_t tmpreg = huart->Instance->RDR;
+        (void)tmpreg;
+        rxIdx = 0;
+        HAL_UART_Receive_IT(huart, &rxByte, 1);
+    }
+}
+
 /* USER CODE END 4 */
 
 /**
