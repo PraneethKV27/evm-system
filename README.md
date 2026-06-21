@@ -275,11 +275,11 @@ evm-system/
 | Green LED | PA6 | Output |
 | Red LED   | None (Removed) | - |
 | Buzzer    | PB6 | Output |
-| Party AB Button | PC7 | Input, active-high, pull-down |
-| Party CD Button | PB10 | Input, active-high, pull-down |
-| Party EF Button | PB3 | Input, active-high, pull-down |
-| Party GH Button | PB5 | Input, active-high, pull-down |
-| Party NOTA Button | PB0 | Input, active-high, pull-down |
+| Party AB Button | PC7 | Input, active-low, pull-up |
+| Party CD Button | PB10 | Input, active-low, pull-up |
+| Party EF Button | PB3 | Input, active-low, pull-up |
+| Party GH Button | PB5 | Input, active-low, pull-up |
+| Party NOTA Button | PB0 | Input, active-low, pull-up |
 
 USART1 (R307): 9600 baud — USART2 (PC bridge): 115200 baud
 
