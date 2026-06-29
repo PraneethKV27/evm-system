@@ -1000,7 +1000,7 @@ static uint8_t Btn_AB_Pressed(void)
 }
 static uint8_t Btn_CD_Pressed(void)
 {
-    return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_10) == GPIO_PIN_SET);
+    return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_10) == GPIO_PIN_RESET);
 }
 static uint8_t Btn_EF_Pressed(void)
 {
