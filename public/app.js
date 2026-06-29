@@ -307,8 +307,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const today = new Date().toISOString().split("T")[0];
     regDobInput.max = today;
     regDobInput.addEventListener("input", (e) => {
-      const val = e.target.value;
+      let val = e.target.value;
       if (val) {
+        const parts = val.split("-");
+        if (parts[0] && parts[0].length > 4) {
+          parts[0] = parts[0].slice(0, 4);
+          e.target.value = parts.join("-");
+          val = e.target.value;
+        }
         const selectedDate = new Date(val);
         const todayDate = new Date();
         if (selectedDate > todayDate || selectedDate.getFullYear() < 1900 || selectedDate.getFullYear() > todayDate.getFullYear()) {

@@ -31,7 +31,7 @@ SecEVM is a secure, web-based Electronic Voting Machine built around an **R307 o
 - Voter registration with 12-digit Aadhaar validation (numeric-only enforcement with real-time red/green border styling feedback)
 - Real-time mobile number validation (exactly 10 digits, numeric-only validation feedback)
 - Name input validation (auto-filters any non-letter characters and highlights red if invalid keys are typed)
-- Date of Birth validation (limits selection to today's date maximum, invalidating future dates or unrealistic years below 1900)
+- Date of Birth validation (limits selection to today's date maximum, dynamically limits manually typed years to exactly 4 digits, and invalidates future dates or unrealistic years below 1900)
 - **5 real R307 scans with per-sample consent** — STM32 captures each sample, uploads base64 CharBuffer via UART (`TEMPLATE_1`…`TEMPLATE_5`), voter approves each before proceeding
 - **Phone-style fusion** — all 5 templates stored as `fp_templates` and searched as one identity at verify time (not 5 separate voters)
 - Saves voter record to Firebase Firestore (or `localStorage` in Demo Mode)
