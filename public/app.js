@@ -1218,6 +1218,19 @@ window.vote = async function (party) {
     document.getElementById("verifyFpSensor").className = "fp-sensor";
     document.getElementById("fpLiveStatus").innerText = "";
     
+    // Auto-clear voter card and success banner after 30 seconds
+    setTimeout(() => {
+      const card = document.getElementById("voterCard");
+      const fpBox = document.getElementById("fpLiveScanBox");
+      if (card) card.style.display = "none";
+      if (fpBox) fpBox.style.display = "none";
+      const voteStatus = document.getElementById("voteStatus");
+      if (voteStatus) {
+        voteStatus.className = "status-banner";
+        voteStatus.innerText = "";
+      }
+    }, 30000);
+    
     // Update stats preview if visible
     updateStatsDisplay();
   } catch (err) {
@@ -1302,6 +1315,19 @@ async function castHardwareVote(aadhaar, party) {
     document.getElementById("voteAadhaar").value = "";
     document.getElementById("verifyFpSensor").className = "fp-sensor";
     document.getElementById("fpLiveStatus").innerText = "";
+    
+    // Auto-clear voter card and success banner after 30 seconds
+    setTimeout(() => {
+      const card = document.getElementById("voterCard");
+      const fpBox = document.getElementById("fpLiveScanBox");
+      if (card) card.style.display = "none";
+      if (fpBox) fpBox.style.display = "none";
+      const voteStatus = document.getElementById("voteStatus");
+      if (voteStatus) {
+        voteStatus.className = "status-banner";
+        voteStatus.innerText = "";
+      }
+    }, 30000);
     
     // Update stats preview if visible
     updateStatsDisplay();

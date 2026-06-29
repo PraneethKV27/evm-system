@@ -42,7 +42,7 @@ SecEVM is a secure, web-based Electronic Voting Machine built around an **R307 o
 - Biometric verification: all 5 stored templates loaded into STM32 via `LOAD_TEMPLATE` (with inter-command delay), then `CMD_VERIFY` triggers R307 `Search` across all pages
 - **80% confidence threshold enforced in firmware** — match score must be ≥ 52428 (80% of 65535). Below that → `MATCH_FAIL:REASON=SCORE_LOW` and ballot stays locked
 - **Direct Hardware Button Voting** — once the ballot is unlocked, voting must be cast using one of the **5 dedicated physical push buttons** on the STM32 board (PORTB `PB1` to `PB5` representing the parties and NOTA). On-screen clicking is disabled to enforce physical vote integrity.
-- One-vote-per-voter enforced via Firestore atomic transaction
+- One-vote-per-voter enforced via Firestore atomic transaction (voter card and success banners automatically clear from the screen 30 seconds after a vote is completed for privacy)
 
 ### 📊 Stats Dashboard
 - Real-time vote counts and percentage bars for all parties
