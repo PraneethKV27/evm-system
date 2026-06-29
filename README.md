@@ -274,15 +274,14 @@ evm-system/
 | R307 Fingerprint RX | USART1 TX (PA9)  | Output |
 | PC / Bridge TX | USART2 RX (PA3)  | Input |
 | PC / Bridge RX | USART2 TX (PA2)  | Output |
-| Green LED | PA5 or PA6 | Output |
+| Green LED | PA6 | Output |
 | Red LED   | None (Removed) | - |
-| Buzzer    | PB0 | Output |
+| Buzzer    | PB6 | Output |
 | Party AB Button | PC7 | Input, active-low, pull-up |
 | Party CD Button | PB10 | Input, active-low, pull-up |
 | Party EF Button | PB3 | Input, active-low, pull-up |
 | Party GH Button | PB5 | Input, active-low, pull-up |
-| Party NOTA Button | PB6 | Input, active-low, pull-up |
-
+| Party NOTA Button | PB0 | Input, active-low, pull-up |
 
 USART1 (R307): 9600 baud — USART2 (PC bridge): 115200 baud
 
