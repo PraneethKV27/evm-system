@@ -302,6 +302,28 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
+  const regDobInput = document.getElementById("dob");
+  if (regDobInput) {
+    const today = new Date().toISOString().split("T")[0];
+    regDobInput.max = today;
+    regDobInput.addEventListener("input", (e) => {
+      const val = e.target.value;
+      if (val) {
+        const selectedDate = new Date(val);
+        const todayDate = new Date();
+        if (selectedDate > todayDate || selectedDate.getFullYear() < 1900 || selectedDate.getFullYear() > todayDate.getFullYear()) {
+          regDobInput.classList.remove("valid");
+          regDobInput.classList.add("invalid");
+        } else {
+          regDobInput.classList.remove("invalid");
+          regDobInput.classList.add("valid");
+        }
+      } else {
+        regDobInput.classList.remove("invalid", "valid");
+      }
+    });
+  }
+
   // Aadhaar pre-verification event listener
   const voteAadhaarInput = document.getElementById("voteAadhaar");
   if (voteAadhaarInput) {
@@ -705,11 +727,13 @@ window.startEnrollment = async function () {
     showStatus("fpStatus", "Mobile Number must be exactly 10 digits ❌", "error");
     return;
   }
-  const age = new Date().getFullYear() - Number(dob.split("-")[0]);
-  if (isNaN(age)) {
-    showStatus("fpStatus", "Invalid Date of Birth ❌", "error");
+  const selectedDate = new Date(dob);
+  const todayDate = new Date();
+  if (isNaN(selectedDate.getTime()) || selectedDate > todayDate || selectedDate.getFullYear() < 1900 || selectedDate.getFullYear() > todayDate.getFullYear()) {
+    showStatus("fpStatus", "Invalid or unrealistic Date of Birth ❌", "error");
     return;
   }
+  const age = todayDate.getFullYear() - selectedDate.getFullYear();
 
   // ── STM32 check ───────────────────────────────────────
   const { bridge, hardware, sensor } = await checkBridgeStatus();
