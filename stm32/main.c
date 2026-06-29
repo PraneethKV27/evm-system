@@ -218,83 +218,115 @@ int main(void)
                 LED_Green_On(); Buzzer_Beep();
                 HAL_Delay(1000); LED_Green_Off();
 
-            sysState = STATE_VOTING;
-            SendToPC("STATUS:VOTING_MODE_ACTIVE");
-            char debugBtns[80];
-            snprintf(debugBtns, sizeof(debugBtns), "STATUS:DEBUG_BTNS:AB=%d:CD=%d:EF=%d:GH=%d:NOTA=%d",
-                     Btn_AB_Pressed(), Btn_CD_Pressed(), Btn_EF_Pressed(), Btn_GH_Pressed(), Btn_NOTA_Pressed());
-            SendToPC(debugBtns);
-        } else if (result == 0x10) {
-            /* Score below 80% threshold — not a hard sensor fail */
-            char pcMsg[80];
-            snprintf(pcMsg, sizeof(pcMsg),
-                     "MATCH_FAIL ID=%s:REASON=SCORE_LOW", currentAadhaar);
-            SendToPC(pcMsg);
-            Buzzer_BeepLong();
-            HAL_Delay(1000);
-            sysState = STATE_IDLE;
-        } else {
-            char pcMsg[64];
-            snprintf(pcMsg, sizeof(pcMsg), "MATCH_FAIL ID=%s", currentAadhaar);
-            SendToPC(pcMsg);
-            Buzzer_BeepLong();
-            HAL_Delay(1000);
-            sysState = STATE_IDLE;
+                sysState = STATE_VOTING;
+                SendToPC("STATUS:VOTING_MODE_ACTIVE");
+                char debugBtns[80];
+                snprintf(debugBtns, sizeof(debugBtns), "STATUS:DEBUG_BTNS:AB=%d:CD=%d:EF=%d:GH=%d:NOTA=%d",
+                         Btn_AB_Pressed(), Btn_CD_Pressed(), Btn_EF_Pressed(), Btn_GH_Pressed(), Btn_NOTA_Pressed());
+                SendToPC(debugBtns);
+            } else if (result == 0x10) {
+                /* Score below 80% threshold — not a hard sensor fail */
+                char pcMsg[80];
+                snprintf(pcMsg, sizeof(pcMsg),
+                         "MATCH_FAIL ID=%s:REASON=SCORE_LOW", currentAadhaar);
+                SendToPC(pcMsg);
+                Buzzer_BeepLong();
+                HAL_Delay(1000);
+                sysState = STATE_IDLE;
+            } else {
+                char pcMsg[64];
+                snprintf(pcMsg, sizeof(pcMsg), "MATCH_FAIL ID=%s", currentAadhaar);
+                SendToPC(pcMsg);
+                Buzzer_BeepLong();
+                HAL_Delay(1000);
+                sysState = STATE_IDLE;
+            }
+            break;
         }
-        break;
-    }
-    case STATE_VOTING:
-    {
-        // Toggle Green LED to indicate active voting state
-        static uint32_t lastBlink = 0;
-        static uint32_t lastDebug = 0;
-        if (HAL_GetTick() - lastBlink > 500) {
-            lastBlink = HAL_GetTick();
-            HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_6);
-        }
-        if (HAL_GetTick() - lastDebug > 1000) {
-            lastDebug = HAL_GetTick();
-            char debugBtns[80];
-            snprintf(debugBtns, sizeof(debugBtns), "STATUS:DEBUG_BTNS:AB=%d:CD=%d:EF=%d:GH=%d:NOTA=%d",
-                     Btn_AB_Pressed(),
-                     Btn_CD_Pressed(),
-                     Btn_EF_Pressed(),
-                     Btn_GH_Pressed(),
-                     Btn_NOTA_Pressed());
-            SendToPC(debugBtns);
-        }
-        const char *selected_party = NULL;
-        if (Btn_AB_Pressed()) {
-            HAL_Delay(40);
-            if (Btn_AB_Pressed()) selected_party = "AB";
-        } else if (Btn_CD_Pressed()) {
-            HAL_Delay(40);
-            if (Btn_CD_Pressed()) selected_party = "CD";
-        } else if (Btn_EF_Pressed()) {
-            HAL_Delay(40);
-            if (Btn_EF_Pressed()) selected_party = "EF";
-        } else if (Btn_GH_Pressed()) {
-            HAL_Delay(40);
-            if (Btn_GH_Pressed()) selected_party = "GH";
-        } else if (Btn_NOTA_Pressed()) {
-            HAL_Delay(40);
-            if (Btn_NOTA_Pressed()) selected_party = "NOTA";
-        }
-        if (selected_party != NULL) {
-            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET); // reset blink
+        case STATE_VOTING:
+        {
+            // Toggle Green LED to indicate active voting state
+            static uint32_t lastBlink = 0;
+            static uint32_t lastDebug = 0;
+            static uint8_t votingInit = 0;
+            static uint8_t prev_AB = 0;
+            static uint8_t prev_CD = 0;
+            static uint8_t prev_EF = 0;
+            static uint8_t prev_GH = 0;
+            static uint8_t prev_NOTA = 0;
 
-            char pcMsg[128];
-            snprintf(pcMsg, sizeof(pcMsg), "VOTE_CAST:ID=%s:PARTY=%s", currentAadhaar, selected_party);
-            SendToPC(pcMsg);
+            if (votingInit == 0) {
+                prev_AB = Btn_AB_Pressed();
+                prev_CD = Btn_CD_Pressed();
+                prev_EF = Btn_EF_Pressed();
+                prev_GH = Btn_GH_Pressed();
+                prev_NOTA = Btn_NOTA_Pressed();
+                votingInit = 1;
+            }
 
-            Buzzer_BeepLong();
-            LED_Green_On();
-            HAL_Delay(1000);
-            LED_Green_Off();
+            if (HAL_GetTick() - lastBlink > 500) {
+                lastBlink = HAL_GetTick();
+                HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_6);
+            }
+            if (HAL_GetTick() - lastDebug > 1000) {
+                lastDebug = HAL_GetTick();
+                char debugBtns[80];
+                snprintf(debugBtns, sizeof(debugBtns), "STATUS:DEBUG_BTNS:AB=%d:CD=%d:EF=%d:GH=%d:NOTA=%d",
+                         Btn_AB_Pressed(),
+                         Btn_CD_Pressed(),
+                         Btn_EF_Pressed(),
+                         Btn_GH_Pressed(),
+                         Btn_NOTA_Pressed());
+                SendToPC(debugBtns);
+            }
 
-            sysState = STATE_IDLE;
-        }
-        break;
+            uint8_t cur_AB = Btn_AB_Pressed();
+            uint8_t cur_CD = Btn_CD_Pressed();
+            uint8_t cur_EF = Btn_EF_Pressed();
+            uint8_t cur_GH = Btn_GH_Pressed();
+            uint8_t cur_NOTA = Btn_NOTA_Pressed();
+
+            const char *selected_party = NULL;
+            if (cur_AB && !prev_AB) {
+                HAL_Delay(40);
+                if (Btn_AB_Pressed()) selected_party = "AB";
+            } else if (cur_CD && !prev_CD) {
+                HAL_Delay(40);
+                if (Btn_CD_Pressed()) selected_party = "CD";
+            } else if (cur_EF && !prev_EF) {
+                HAL_Delay(40);
+                if (Btn_EF_Pressed()) selected_party = "EF";
+            } else if (cur_GH && !prev_GH) {
+                HAL_Delay(40);
+                if (Btn_GH_Pressed()) selected_party = "GH";
+            } else if (cur_NOTA && !prev_NOTA) {
+                HAL_Delay(40);
+                if (Btn_NOTA_Pressed()) selected_party = "NOTA";
+            }
+
+            // Update previous states for next loop iteration
+            prev_AB = cur_AB;
+            prev_CD = cur_CD;
+            prev_EF = cur_EF;
+            prev_GH = cur_GH;
+            prev_NOTA = cur_NOTA;
+
+            if (selected_party != NULL) {
+                HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET); // reset blink
+
+                char pcMsg[128];
+                snprintf(pcMsg, sizeof(pcMsg), "VOTE_CAST:ID=%s:PARTY=%s", currentAadhaar, selected_party);
+                SendToPC(pcMsg);
+
+                Buzzer_BeepLong();
+                LED_Green_On();
+                HAL_Delay(1000);
+                LED_Green_Off();
+
+                votingInit = 0; // Reset initialization flag for the next voter
+                sysState = STATE_IDLE;
+            }
+            break;
         }
         default:
             sysState = STATE_IDLE;
@@ -968,7 +1000,7 @@ static uint8_t Btn_AB_Pressed(void)
 }
 static uint8_t Btn_CD_Pressed(void)
 {
-    return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_10) == GPIO_PIN_RESET);
+    return (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_10) == GPIO_PIN_SET);
 }
 static uint8_t Btn_EF_Pressed(void)
 {

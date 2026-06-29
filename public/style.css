@@ -1125,3 +1125,16 @@ footer {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* Real-time input validation states */
+input.invalid {
+  border-color: var(--danger) !important;
+  box-shadow: 0 0 10px rgba(239, 68, 68, 0.3) !important;
+  background: rgba(239, 68, 68, 0.05) !important;
+}
+
+input.valid {
+  border-color: var(--success) !important;
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.15) !important;
+  background: rgba(16, 185, 129, 0.02) !important;
+}

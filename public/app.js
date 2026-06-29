@@ -243,9 +243,80 @@ document.addEventListener("DOMContentLoaded", () => {
   startHardwarePolling();
   showBackendStartupHint();
 
+  // Real-time input validation listeners
+  const regAadhaarInput = document.getElementById("aadhaar");
+  if (regAadhaarInput) {
+    regAadhaarInput.addEventListener("input", (e) => {
+      let val = e.target.value;
+      if (/[^\d]/.test(val)) {
+        regAadhaarInput.classList.remove("valid");
+        regAadhaarInput.classList.add("invalid");
+      } else if (val.length === 12) {
+        regAadhaarInput.classList.remove("invalid");
+        regAadhaarInput.classList.add("valid");
+      } else {
+        regAadhaarInput.classList.remove("invalid", "valid");
+      }
+    });
+  }
+
+  const regMobileInput = document.getElementById("mobile");
+  if (regMobileInput) {
+    regMobileInput.addEventListener("input", (e) => {
+      let val = e.target.value;
+      if (/[^\d]/.test(val)) {
+        regMobileInput.classList.remove("valid");
+        regMobileInput.classList.add("invalid");
+      } else if (val.length === 10) {
+        regMobileInput.classList.remove("invalid");
+        regMobileInput.classList.add("valid");
+      } else {
+        regMobileInput.classList.remove("invalid", "valid");
+      }
+    });
+  }
+
+  const regNameInput = document.getElementById("name");
+  if (regNameInput) {
+    regNameInput.addEventListener("input", (e) => {
+      let val = e.target.value;
+      const cleaned = val.replace(/[^A-Za-z\s]/g, "");
+      if (val !== cleaned) {
+        e.target.value = cleaned;
+        regNameInput.classList.remove("valid");
+        regNameInput.classList.add("invalid");
+        setTimeout(() => {
+          if (regNameInput.value === "") {
+            regNameInput.classList.remove("invalid", "valid");
+          } else {
+            regNameInput.classList.remove("invalid");
+            regNameInput.classList.add("valid");
+          }
+        }, 800);
+      } else if (cleaned.length > 0) {
+        regNameInput.classList.remove("invalid");
+        regNameInput.classList.add("valid");
+      } else {
+        regNameInput.classList.remove("invalid", "valid");
+      }
+    });
+  }
+
   // Aadhaar pre-verification event listener
   const voteAadhaarInput = document.getElementById("voteAadhaar");
   if (voteAadhaarInput) {
+    voteAadhaarInput.addEventListener("input", (e) => {
+      let val = e.target.value;
+      if (/[^\d]/.test(val)) {
+        voteAadhaarInput.classList.remove("valid");
+        voteAadhaarInput.classList.add("invalid");
+      } else if (val.length === 12) {
+        voteAadhaarInput.classList.remove("invalid");
+        voteAadhaarInput.classList.add("valid");
+      } else {
+        voteAadhaarInput.classList.remove("invalid", "valid");
+      }
+    });
     voteAadhaarInput.addEventListener("input", handleVoteAadhaarInput);
   }
 
@@ -623,6 +694,15 @@ window.startEnrollment = async function () {
   }
   if (!/^\d{12}$/.test(aadhaar)) {
     showStatus("fpStatus", "Aadhaar must be exactly 12 digits ❌", "error");
+    return;
+  }
+  if (!/^[A-Za-z\s]+$/.test(name)) {
+    showStatus("fpStatus", "Voter Name must contain only letters and spaces ❌", "error");
+    return;
+  }
+  const mobile = document.getElementById("mobile").value.trim();
+  if (mobile && !/^\d{10}$/.test(mobile)) {
+    showStatus("fpStatus", "Mobile Number must be exactly 10 digits ❌", "error");
     return;
   }
   const age = new Date().getFullYear() - Number(dob.split("-")[0]);
