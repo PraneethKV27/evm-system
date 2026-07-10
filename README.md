@@ -21,6 +21,7 @@ SecEVM is a secure, web-based Electronic Voting Machine built around an **R307 o
 | **Real data enforcement** | Enrollment and storage are blocked unless **all 5 fingerprint templates are genuine R307 base64 data**. Mock/placeholder templates are rejected when hardware is connected |
 | **Strict hardware verification** | Fully blocks biometric verification if the STM32 hardware is disconnected, refusing to proceed with mock simulations in live deployments |
 | **Anti-autofill protection** | Added `autocomplete="off"` to all Aadhaar and voter input fields, blocking browsers from caching and suggesting sensitive voter details |
+| **LaTeX Internship Report Added** | Added a comprehensive, multi-chapter summer internship LaTeX report document detailing hardware layout pinouts (e.g. 4x3 keypad), biometric verify algorithms, non-volatile storage, and system troubleshooting outcomes. |
 
 
 ---
